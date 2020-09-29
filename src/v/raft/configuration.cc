@@ -29,6 +29,15 @@ bool group_nodes::contains(model::node_id id) const {
     return l_it != learners.cend();
 }
 
+bool group_nodes::contains(model::node_id id) const {
+    auto v_it = std::find(std::cbegin(voters), std::cend(voters), id);
+    if (v_it != voters.cend()) {
+        return true;
+    }
+    auto l_it = std::find(std::cbegin(learners), std::cend(learners), id);
+    return l_it != learners.cend();
+}
+
 group_configuration::group_configuration(std::vector<model::broker> brokers)
   : _brokers(std::move(brokers)) {
     _current.voters.resize(brokers.size());
@@ -45,10 +54,12 @@ group_configuration::group_configuration(std::vector<model::broker> brokers)
 group_configuration::group_configuration(
   std::vector<model::broker> brokers,
   group_nodes current,
+  model::revision_id revision,
   std::optional<group_nodes> old)
   : _brokers(std::move(brokers))
   , _current(std::move(current))
-  , _old(std::move(old)) {}
+  , _old(std::move(old))
+  , _revision(revision) {}
 
 std::optional<model::broker>
 group_configuration::find(model::node_id id) const {
@@ -282,9 +293,10 @@ void group_configuration::update(model::broker broker) {
 std::ostream& operator<<(std::ostream& o, const group_configuration& c) {
     fmt::print(
       o,
-      "{{current: {}, old:{}, brokers: {}}}",
+      "{{current: {}, old:{}, revision: {}, brokers: {}}}",
       c._current,
       c._old,
+      c._revision,
       c._brokers);
     return o;
 }
@@ -318,7 +330,8 @@ void adl<raft::group_configuration>::to(
       cfg.version(),
       cfg.brokers(),
       cfg.current_config(),
-      cfg.old_config());
+      cfg.old_config(),
+      cfg.revision_id());
 }
 
 raft::group_configuration
@@ -326,16 +339,24 @@ adl<raft::group_configuration>::from(iobuf_parser& p) {
     auto version = adl<uint8_t>{}.from(p);
     // currently we support only version 1
     vassert(
-      version == raft::group_configuration::current_version,
-      "Version {} is not supported. We only support version {}",
+      version <= raft::group_configuration::current_version,
+      "Version {} is not supported. We only support versions up to {}",
       version,
       raft::group_configuration::current_version);
 
     auto brokers = adl<std::vector<model::broker>>{}.from(p);
     auto current = adl<raft::group_nodes>{}.from(p);
     auto old = adl<std::optional<raft::group_nodes>>{}.from(p);
+    if (version == 0) {
+        return raft::group_configuration(
+          std::move(brokers),
+          std::move(current),
+          model::revision_id(0),
+          std::move(old));
+    }
+    auto revision = adl<model::revision_id>{}.from(p);
     return raft::group_configuration(
-      std::move(brokers), std::move(current), std::move(old));
+      std::move(brokers), std::move(current), revision, std::move(old));
 }
 
 } // namespace reflection
