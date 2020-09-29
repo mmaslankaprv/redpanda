@@ -10,6 +10,7 @@
  */
 
 #pragma once
+#include "cluster/errc.h"
 #include "model/fundamental.h"
 #include "model/metadata.h"
 
@@ -35,6 +36,17 @@ struct get_leadership_request {};
 
 struct get_leadership_reply {
     ntp_leaders leaders;
+};
+
+struct get_partition_update_state_request {
+    model::ntp ntp;
+};
+
+struct get_partition_update_state_reply {
+    cluster::errc result;
+    model::offset committed_offset;
+    model::offset last_config_offset;
+    model::revision_id revision;
 };
 
 inline std::ostream& operator<<(std::ostream& o, const ntp_leader& l) {
