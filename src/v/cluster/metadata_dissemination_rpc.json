@@ -14,6 +14,11 @@
             "name": "get_leadership",
             "input_type": "get_leadership_request",
             "output_type": "get_leadership_reply"
+        },
+        {
+            "name": "get_partition_update_state",
+            "input_type": "get_partition_update_state_request",
+            "output_type": "get_partition_update_state_reply"
         }
     ]
 }

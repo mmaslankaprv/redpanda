@@ -11,8 +11,10 @@
 
 #pragma once
 
+#include "cluster/metadata_dissemination_types.h"
 #include "model/fundamental.h"
 #include "model/metadata.h"
+#include "rpc/connection_cache.h"
 
 namespace cluster {
 
@@ -26,4 +28,6 @@ std::vector<model::node_id> calculate_non_overlapping_nodes(
 std::vector<model::node_id> get_partition_members(
   model::partition_id pid, const model::topic_metadata& tp_md);
 
+ss::future<get_partition_update_state_reply> request_partition_update_state(
+  rpc::connection_cache&, model::node_id, model::ntp);
 } // namespace cluster

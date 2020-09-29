@@ -9,7 +9,10 @@
 
 #include "cluster/metadata_dissemination_utils.h"
 
+#include "cluster/metadata_dissemination_rpc_service.h"
+#include "cluster/types.h"
 #include "likely.h"
+#include "model/metadata.h"
 
 #include <fmt/core.h>
 
@@ -49,5 +52,29 @@ std::vector<model::node_id> get_partition_members(
       [](model::broker_shard bs) { return bs.node_id; });
 
     return members;
+}
+
+ss::future<get_partition_update_state_reply> request_partition_update_state(
+  rpc::connection_cache& connections, model::node_id target, model::ntp ntp) {
+    return connections
+      .with_node_client<metadata_dissemination_rpc_client_protocol>(
+        ss::this_shard_id(),
+        target,
+        [ntp = std::move(ntp)](
+          metadata_dissemination_rpc_client_protocol c) mutable {
+            get_partition_update_state_request req{.ntp = std::move(ntp)};
+            return c
+              .get_partition_update_state(
+                std::move(req), rpc::client_opts(rpc::no_timeout))
+              .then(&rpc::get_ctx_data<get_partition_update_state_reply>);
+        })
+      .then([](result<get_partition_update_state_reply> res) {
+          if (!res) {
+              get_partition_update_state_reply reply;
+              reply.result = errc(res.error().value());
+              return reply;
+          }
+          return res.value();
+      });
 }
 } // namespace cluster

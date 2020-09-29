@@ -544,7 +544,11 @@ void application::start() {
           proto->register_service<cluster::metadata_dissemination_handler>(
             _scheduling_groups.cluster_sg(),
             smp_service_groups.cluster_smp_sg(),
-            std::ref(controller->get_partition_leaders()));
+            std::ref(controller->get_partition_leaders()),
+            std::ref(partition_manager),
+            std::ref(controller->get_topics_state()),
+            std::ref(shard_table),
+            std::ref(_raft_connection_cache));
           s.set_protocol(std::move(proto));
       })
       .get();

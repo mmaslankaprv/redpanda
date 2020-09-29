@@ -198,7 +198,11 @@ public:
               proto->register_service<cluster::metadata_dissemination_handler>(
                 ss::default_scheduling_group(),
                 ss::default_smp_service_group(),
-                std::ref(_controller->get_partition_leaders()));
+                std::ref(_controller->get_partition_leaders()),
+                std::ref(_pm),
+                std::ref(_controller->get_topics_state()),
+                std::ref(st),
+                std::ref(_cli_cache));
               s.set_protocol(std::move(proto));
           })
           .get();
