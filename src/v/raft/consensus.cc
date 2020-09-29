@@ -2103,4 +2103,7 @@ voter_priority consensus::get_node_priority(model::node_id id) const {
       (brokers.size() - idx) * (voter_priority::max() / brokers.size()));
 }
 
+model::offset consensus::get_latest_configuration_offset() const {
+    return _configuration_manager.get_latest_offset();
+}
 } // namespace raft
