@@ -646,6 +646,10 @@ ss::future<std::error_code> consensus::change_configuration(Func&& f) {
 
           result<group_configuration> res = f(std::move(latest_cfg));
           if (res) {
+              if (res.value().revision_id() < config().revision_id()) {
+                  return ss::make_ready_future<std::error_code>(
+                    errc::invalid_configuration_update);
+              }
               return replicate_configuration(
                 std::move(u), std::move(res.value()));
           }
@@ -653,11 +657,11 @@ ss::future<std::error_code> consensus::change_configuration(Func&& f) {
       });
 }
 
-ss::future<std::error_code>
-consensus::add_group_members(std::vector<model::broker> nodes) {
+ss::future<std::error_code> consensus::add_group_members(
+  std::vector<model::broker> nodes, std::optional<model::revision_id> rev) {
     vlog(_ctxlog.trace, "Adding members: {}", nodes);
     return change_configuration(
-      [nodes = std::move(nodes)](group_configuration current) mutable {
+      [nodes = std::move(nodes), rev](group_configuration current) mutable {
           auto contains_already = std::any_of(
             std::cbegin(nodes),
             std::cend(nodes),
@@ -670,16 +674,17 @@ consensus::add_group_members(std::vector<model::broker> nodes) {
           }
 
           current.add(std::move(nodes));
+          current.set_revision(rev.value_or(current.revision_id()++));
 
           return result<group_configuration>(std::move(current));
       });
 }
 
-ss::future<std::error_code>
-consensus::remove_members(std::vector<model::node_id> ids) {
+ss::future<std::error_code> consensus::remove_members(
+  std::vector<model::node_id> ids, std::optional<model::revision_id> rev) {
     vlog(_ctxlog.trace, "Removing members: {}", ids);
     return change_configuration(
-      [ids = std::move(ids)](group_configuration current) {
+      [ids = std::move(ids), rev](group_configuration current) {
           auto all_exists = std::all_of(
             std::cbegin(ids), std::cend(ids), [&current](model::node_id id) {
                 return current.contains_broker(id);
@@ -688,6 +693,7 @@ consensus::remove_members(std::vector<model::node_id> ids) {
               return result<group_configuration>(errc::node_does_not_exists);
           }
           current.remove(ids);
+          current.set_revision(rev.value_or(current.revision_id()++));
 
           if (current.current_config().voters.empty()) {
               return result<group_configuration>(
@@ -697,11 +703,13 @@ consensus::remove_members(std::vector<model::node_id> ids) {
       });
 }
 
-ss::future<std::error_code>
-consensus::replace_configuration(std::vector<model::broker> new_brokers) {
-    return change_configuration([new_brokers = std::move(new_brokers)](
-                                  group_configuration current) mutable {
+ss::future<std::error_code> consensus::replace_configuration(
+  std::vector<model::broker> new_brokers,
+  std::optional<model::revision_id> rev) {
+    return change_configuration([new_brokers = std::move(new_brokers),
+                                 rev](group_configuration current) mutable {
         current.replace(std::move(new_brokers));
+        current.set_revision(rev.value_or(current.revision_id()++));
         return result<group_configuration>(std::move(current));
     });
 }
