@@ -72,21 +72,22 @@ ss::future<> controller::start() {
             std::ref(_tp_updates_dispatcher));
       })
       .then([this] {
-          return _backend.start(
-            std::ref(_tp_state),
-            std::ref(_shard_table),
-            std::ref(_partition_manager),
-            std::ref(_members_table),
-            std::ref(_partition_leaders),
-            std::ref(_as));
-      })
-      .then([this] {
           return _tp_frontend.start(
             _raft0->self().id(),
             std::ref(_stm),
             std::ref(_connections),
             std::ref(_partition_allocator),
             std::ref(_partition_leaders),
+            std::ref(_as));
+      })
+      .then([this] {
+          return _backend.start(
+            std::ref(_tp_state),
+            std::ref(_shard_table),
+            std::ref(_partition_manager),
+            std::ref(_members_table),
+            std::ref(_partition_leaders),
+            std::ref(_tp_frontend),
             std::ref(_as));
       })
       .then([this] {
