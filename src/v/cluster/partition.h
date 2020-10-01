@@ -101,9 +101,9 @@ public:
         return _raft->transfer_leadership(target);
     }
 
-    ss::future<std::error_code>
-    update_replica_set(std::vector<model::broker> brokers) {
-        return _raft->replace_configuration(std::move(brokers));
+    ss::future<std::error_code> update_replica_set(
+      std::vector<model::broker> brokers, model::revision_id rev) {
+        return _raft->replace_configuration(std::move(brokers), rev);
     }
 
     raft::group_configuration group_configuration() const {

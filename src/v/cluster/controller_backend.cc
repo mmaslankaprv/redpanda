@@ -10,8 +10,11 @@
 #include "cluster/controller_backend.h"
 
 #include "cluster/cluster_utils.h"
+#include "cluster/errc.h"
 #include "cluster/logger.h"
 #include "cluster/members_table.h"
+#include "cluster/metadata_dissemination_types.h"
+#include "cluster/metadata_dissemination_utils.h"
 #include "cluster/partition_leaders_table.h"
 #include "cluster/shard_table.h"
 #include "cluster/topic_table.h"
@@ -21,6 +24,7 @@
 #include "model/metadata.h"
 #include "outcome.h"
 #include "raft/types.h"
+#include "random/generators.h"
 #include "ssx/future-util.h"
 
 #include <seastar/core/abort_source.hh>
@@ -45,12 +49,14 @@ controller_backend::controller_backend(
   ss::sharded<partition_manager>& pm,
   ss::sharded<members_table>& members,
   ss::sharded<partition_leaders_table>& leaders,
+  ss::sharded<rpc::connection_cache>& conn,
   ss::sharded<ss::abort_source>& as)
   : _topics(tp_state)
   , _shard_table(st)
   , _partition_manager(pm)
   , _members_table(members)
   , _partition_leaders_table(leaders)
+  , _connections(conn)
   , _self(model::node_id(config::shard_local_cfg().node_id))
   , _data_directory(config::shard_local_cfg().data_directory().as_sstring())
   , _as(as) {}
@@ -61,10 +67,101 @@ ss::future<> controller_backend::stop() {
 }
 
 ss::future<> controller_backend::start() {
-    start_topics_reconciliation_loop();
-    _housekeeping_timer.set_callback([this] { housekeeping(); });
-    _housekeeping_timer.arm_periodic(std::chrono::seconds(1));
-    return ss::now();
+    return bootstrap_controller_backend().then([this] {
+        start_topics_reconciliation_loop();
+        _housekeeping_timer.set_callback([this] { housekeeping(); });
+        _housekeeping_timer.arm_periodic(std::chrono::seconds(1));
+    });
+}
+
+ss::future<> controller_backend::bootstrap_controller_backend() {
+    if (!_topics.local().has_pending_changes()) {
+        vlog(clusterlog.trace, "no pending changes, skipping bootstrap");
+        return ss::now();
+    }
+
+    return fetch_deltas().then([this] {
+        return ss::with_semaphore(
+          _topics_sem, 1, [this] { return do_bootstrap(); });
+    });
+}
+bool has_local_replicas(
+  model::node_id self, const std::vector<model::broker_shard>& replicas) {
+    return std::find_if(
+             std::cbegin(replicas),
+             std::cend(replicas),
+             [self](const model::broker_shard& bs) {
+                 return bs.node_id == self && bs.shard == ss::this_shard_id();
+             })
+           != replicas.cend();
+}
+
+ss::future<> controller_backend::do_bootstrap() {
+    return ss::parallel_for_each(
+      _topic_deltas.begin(),
+      _topic_deltas.end(),
+      [this](underlying_t::value_type& ntp_deltas) {
+          return bootstrap_ntp(ntp_deltas.first, ntp_deltas.second);
+      });
+}
+
+ss::future<bool>
+controller_backend::is_applicable(model::ntp ntp, const topic_table::delta& d) {
+    using op_t = topic_table::delta::op_type;
+
+    model::revision_id rev(d.offset());
+    // addition or deletion terminate lookup
+    if (d.type == op_t::add || d.type == op_t::del) {
+        return ss::make_ready_future<bool>(true);
+    }
+
+    // no local replicas just move backward
+    if (!has_local_replicas(_self, d.p_as.replicas)) {
+        return ss::make_ready_future<bool>(false);
+    }
+
+    auto cfg = _topics.local().get_topic_cfg(model::topic_namespace_view(ntp));
+    // configuration doesn't exists
+    vassert(cfg, "Unable to find topic config for {}", ntp);
+    auto ntp_cfg = cfg->make_ntp_config(_data_directory, ntp.tp.partition, rev);
+    const auto ntp_dir = ntp_cfg.work_directory();
+
+    // if an ntp directory for this revision exists it means that the ntp was
+    // created, we do not remove ntp directories right after partition replica
+    // removal to determine if creation of replica was successfull or if
+    // deletion failed
+    return ss::file_exists(ntp_dir);
+}
+
+ss::future<>
+controller_backend::bootstrap_ntp(model::ntp ntp, deltas_t& deltas) {
+    // find last delta that has to be applied, then apply all deltas follwing
+    // the one found
+    return ss::do_with(
+             bool{false},
+             deltas.rbegin(),
+             [this, &deltas, ntp = std::move(ntp)](
+               bool& stop, deltas_t::reverse_iterator& it) {
+                 return ss::do_until(
+                          [&stop, &it, &deltas] {
+                              return stop || it == deltas.rend();
+                          },
+                          [this, &it, &stop, ntp] {
+                              return is_applicable(ntp, *it).then(
+                                [&stop, &it](bool applicable) {
+                                    stop = applicable;
+                                    ++it;
+                                });
+                          })
+                   .then([&it, &deltas] {
+                       deltas_t res;
+                       res.reserve(std::distance(deltas.rbegin(), it));
+                       std::move(
+                         it.base(), deltas.end(), std::back_inserter(res));
+                       deltas = std::move(res);
+                   });
+             })
+      .then([this, &deltas] { return reconcile_ntp(deltas); });
 }
 
 ss::future<> controller_backend::fetch_deltas() {
@@ -157,17 +254,6 @@ ss::future<> controller_backend::reconcile_topics() {
     });
 }
 
-bool has_local_replicas(
-  model::node_id self, const std::vector<model::broker_shard>& replicas) {
-    return std::find_if(
-             std::cbegin(replicas),
-             std::cend(replicas),
-             [self](const model::broker_shard& bs) {
-                 return bs.node_id == self && bs.shard == ss::this_shard_id();
-             })
-           != replicas.cend();
-}
-
 std::vector<model::broker> create_brokers_set(
   const std::vector<model::broker_shard>& replicas,
   cluster::members_table& members) {
@@ -196,7 +282,7 @@ controller_backend::execute_partitition_op(const topic_table::delta& delta) {
      * increasing together with cluster state evelotion hence it is perfect
      * as a source of revision_id
      */
-    vlog(clusterlog.trace, "Executing operation: {}", delta);
+    vlog(clusterlog.trace, "executing ntp opeartion: {}", delta);
     model::revision_id rev(delta.offset());
     // new partitions
 
@@ -213,57 +299,130 @@ controller_backend::execute_partitition_op(const topic_table::delta& delta) {
           rev,
           create_brokers_set(delta.p_as.replicas, _members_table.local()));
     case topic_table::delta::op_type::del:
-        return delete_partition(delta.ntp, rev);
+        // delete partition together with directory
+        return delete_partition(delta.ntp, rev, true);
     case topic_table::delta::op_type::update:
         return process_partition_update(delta.ntp, delta.p_as, rev);
     }
     __builtin_unreachable();
 }
 
-ss::future<std::error_code> controller_backend::process_partition_update(
-  model::ntp ntp, const partition_assignment& p_as, model::revision_id rev) {
-    // if there is no local replica in replica set but,
-    // partition with requested ntp exists on this broker core
-    // it has to be removed after new configuration is stable
-    auto partition = _partition_manager.local().get(ntp);
-    if (!has_local_replicas(_self, p_as.replicas)) {
-        // we do not have local replicas and partition does not
-        // exists, it is ok
-        if (!partition) {
-            return ss::make_ready_future<std::error_code>(errc::success);
-        }
-        // this partition has to be removed eventually
+/**
+ * This method uses out of band (not being a part of raft protocol) mechanism to
+ * determine if it is safe to remove partition replica. In order to safely do
+ * that and not comprise liveness of raft protocol the decision has to be
+ * requested by node that is going to remove the partiton. Otherwise it the node
+ * is permanently down other partitipants wouldn't have confirmation if the
+ * replica was removed successfully. Delete is decided using information comming
+ * from one of the nodes holding current replica set for given partion. Request
+ * target node is chosen from current replica set available in topics table.
+ * If the data in table are out of request receiving node will route request
+ * to one of the nodes that are currently in replica set.
+ *
+ * Why we can not relay just on Raft protocol ?
+ *
+ * In raft all the requests are initiated by the leader. In oreder to make sure
+ * that all of the replicas that are designated to be deleted the leader would
+ * have to make sure that exactly ALL nodes (from previous configuration) have
+ * reached certain offset. When one of the nodes from the previous configuration
+ * would be down leader wouldn't be possible to make progress.
+ *
+ * Important notice:
+ *
+ * When configuration revision is advanced comparing to current update revision
+ * it means that majority of partition replicas considered configuration change
+ * as successfull
+ *
+ * Following conditions trigger deletion of partion replica:
+ *
+ * 1) Configuration with current or greater revision was committed (no request
+ *    is sent)
+ *
+ * 2) Partion was completely removed from the topics table (i.e. nothing depend
+ *    on partion state, it can be safely removed)
+ *
+ * 3) Response revision_id is greater than current update revision and remote
+ *     replica has seen current configuration already
+ *
+ * 4) Configuration from current update was already committed by other replicas.
+ *    This is perfectly normal situation as the node that is leaving replica set
+ *    will not get updates after majority replicas committed configuration
+ *    confirming node removal.
+ */
+ss::future<bool> controller_backend::is_ready_to_be_removed(
+  ss::lw_shared_ptr<partition> partition, model::revision_id rev) {
+    auto cfg_offset = partition->get_latest_configuration_offset();
 
-        return update_partition_replica_set(ntp, p_as.replicas)
-          .then([this, ntp, rev](std::error_code ec) {
-              if (!ec) {
-                  return delete_partition(ntp, rev);
+    // case 1)
+    bool is_simple = partition->group_configuration().type()
+                     == raft::configuration_type::simple;
+
+    // already committed doesn't have to check with other brokers
+    if (
+      cfg_offset <= partition->committed_offset() && is_simple
+      && partition->get_revision_id() >= rev) {
+        return ss::make_ready_future<bool>(true);
+    }
+    // case 2)
+    auto pas = _topics.local().get_partition_assignment(partition->ntp());
+    if (!pas) {
+        // already removed from state, we can remove this partion
+        return ss::make_ready_future<bool>(true);
+    }
+
+    // use random replica
+    auto idx = random_generators::get_int(pas->replicas.size() - 1);
+    auto target = pas->replicas[idx].node_id;
+    if (target == _self) {
+        return ss::make_ready_future<bool>(false);
+    }
+    return request_partition_update_state(
+             _connections.local(), target, partition->ntp())
+      .then([rev, cfg_offset](get_partition_update_state_reply reply) {
+          if (reply.result == errc::success) {
+              auto cfg_committed = reply.committed_offset >= model::offset(0)
+                                   && reply.last_config_offset
+                                        <= reply.committed_offset;
+
+              // case 3)
+              if (
+                reply.revision > rev && reply.committed_offset >= cfg_offset) {
+                  return true;
               }
-              return ss::make_ready_future<std::error_code>(ec);
-          });
-    }
+              // case 4)
 
-    // partition already exists, update configuration
-    if (partition) {
-        return update_partition_replica_set(ntp, p_as.replicas);
-    }
-    // create partition with empty configuration. Configuration
-    // will be populated during node recovery
-    return create_partition(ntp, p_as.group, rev, {});
+              return cfg_committed && reply.revision == rev;
+          }
+          return false;
+      });
 }
 
 bool is_configuration_up_to_date(
-  const std::vector<model::broker_shard>& bs,
-  const raft::group_configuration& cfg) {
-    absl::flat_hash_set<model::node_id> all_ids;
-    // we are only interested in final configuration
-    if (cfg.old_config()) {
+  const ss::lw_shared_ptr<partition>& partition,
+  model::revision_id update_revision,
+  const std::vector<model::broker_shard>& bs) {
+    auto group_cfg = partition->group_configuration();
+    auto p_rev = partition->get_revision_id();
+    auto configuration_committed = partition->get_latest_configuration_offset()
+                                   <= partition->committed_offset();
+
+    if (group_cfg.type() == raft::configuration_type::joint) {
         return false;
     }
-    cfg.for_each_voter(
-      [&all_ids](model::node_id nid) { all_ids.emplace(nid); });
-    cfg.for_each_learner(
-      [&all_ids](model::node_id nid) { all_ids.emplace(nid); });
+
+    if (p_rev == update_revision && !configuration_committed) {
+        return false;
+    }
+    // compare broker ids
+    absl::flat_hash_set<model::node_id> all_ids;
+    for (auto& id : group_cfg.current_config().voters) {
+        all_ids.emplace(id);
+    }
+
+    for (auto& id : group_cfg.current_config().learners) {
+        all_ids.emplace(id);
+    }
+
     // there is different number of brokers in group configuration
     if (all_ids.size() != bs.size()) {
         return false;
@@ -275,32 +434,109 @@ bool is_configuration_up_to_date(
     return all_ids.size() == bs.size();
 }
 
-ss::future<std::error_code> controller_backend::update_partition_replica_set(
-  const model::ntp& ntp, const std::vector<model::broker_shard>& replicas) {
+ss::future<std::error_code> controller_backend::process_partition_update(
+  model::ntp ntp, const partition_assignment& current, model::revision_id rev) {
+    vlog(clusterlog.trace, "processing partiton update, revision: {}", rev);
+    // if there is no local replica in replica set but,
+    // partition with requested ntp exists on this broker core
+    // it has to be removed after new configuration is stable
+    auto partition = _partition_manager.local().get(ntp);
+
+    if (partition && partition->get_revision_id() > rev) {
+        // current change is obsolete, configuration is already updated with
+        // more recent change, do nothing
+        return ss::make_ready_future<std::error_code>(errc::success);
+    }
+
+    if (!has_local_replicas(_self, current.replicas)) {
+        // we do not have local replicas and partition does not
+        // exists, it is ok
+        if (!partition) {
+            return ss::make_ready_future<std::error_code>(errc::success);
+        }
+        return is_ready_to_be_removed(partition, rev)
+          .then([this, ntp, rev, current](bool can_remove) {
+              if (can_remove) {
+                  vlog(
+                    clusterlog.debug,
+                    "removing partition: {} replica, revision: {}",
+                    ntp,
+                    rev);
+                  // do not remove folder to track partition movement
+                  return delete_partition(ntp, rev, false);
+              }
+              return update_partition_replica_set(ntp, current.replicas, rev)
+                .then([](std::error_code ec) {
+                    // always wait for recovery after configuration update
+                    return ec ? ec : errc::waiting_for_recovery;
+                });
+          });
+    }
+
+    // partition already exists, update configuration
+    if (partition) {
+        return update_partition_replica_set(ntp, current.replicas, rev);
+    }
+    // create partition with empty configuration. Configuration
+    // will be populated during node recovery
     vlog(
-      clusterlog.trace,
-      "updating partition {} replicas with {}",
+      clusterlog.debug,
+      "creating partition: {} replica, revision: {}",
       ntp,
-      replicas);
+      rev);
+    return create_partition(ntp, current.group, rev, {})
+      .then([](std::error_code ec) {
+          // always wait for recovery after creating partiton
+          return ec ? ec : errc::waiting_for_recovery;
+      });
+}
+
+ss::future<std::error_code> controller_backend::update_partition_replica_set(
+  const model::ntp& ntp,
+  const std::vector<model::broker_shard>& replicas,
+  model::revision_id rev) {
     /**
      * Following scenarios can happen in here:
      * - node is a leader for current partition => just update config
      * - node is not a leader for current partition => check if config is
-     * equal to requested, if not return failure
+     *   equal to requested, if not return failure
      */
     auto partition = _partition_manager.local().get(ntp);
+    // wait for configuration update, only declare success
+    // when configuration was actually updated
+    if (is_configuration_up_to_date(partition, rev, replicas)) {
+        return ss::make_ready_future<std::error_code>(errc::success);
+    }
     // we are the leader, update configuration
     if (partition->is_leader()) {
         auto brokers = create_brokers_set(replicas, _members_table.local());
-        return partition->update_replica_set(std::move(brokers));
+        vlog(
+          clusterlog.debug,
+          "updating partition: {} replica set with: {}, revision: {}",
+          ntp,
+          replicas,
+          rev);
+
+        auto f = partition->update_replica_set(std::move(brokers), rev);
+        return ss::with_timeout(
+                 model::timeout_clock::now() + std::chrono::seconds(5),
+                 std::move(f))
+          .then_wrapped([](ss::future<std::error_code> f) {
+              try {
+                  return f.get0();
+              } catch (const ss::timed_out_error& e) {
+                  return make_error_code(errc::timeout);
+              }
+          })
+          .then([partition, rev, replicas](std::error_code) {
+              if (is_configuration_up_to_date(partition, rev, replicas)) {
+                  return make_error_code(errc::success);
+              }
+              return make_error_code(errc::waiting_for_recovery);
+          });
     }
-    // not the leader, wait for configuration update, only declare success
-    // when configuration was actually updated
-    if (!is_configuration_up_to_date(
-          replicas, partition->group_configuration())) {
-        return ss::make_ready_future<std::error_code>(errc::not_leader);
-    }
-    return ss::make_ready_future<std::error_code>(errc::success);
+
+    return ss::make_ready_future<std::error_code>(errc::not_leader);
 }
 
 ss::future<> controller_backend::add_to_shard_table(
@@ -327,8 +563,10 @@ ss::future<std::error_code> controller_backend::create_partition(
 
     auto f = ss::now();
     // handle partially created topic
-    if (likely(_partition_manager.local().get(ntp).get() == nullptr)) {
-        // we use offset as an ntp_id as it is always increasing and it
+    auto partition = _partition_manager.local().get(ntp);
+    // no partition exists, create one
+    if (likely(!partition)) {
+        // we use offset as an rev as it is always increasing and it
         // increases while ntp is being created again
         f = _partition_manager.local()
               .manage(
@@ -336,6 +574,12 @@ ss::future<std::error_code> controller_backend::create_partition(
                 group_id,
                 std::move(members))
               .discard_result();
+    } else {
+        // old partition still exists, wait for it to be removed
+        if (partition->get_revision_id() < rev) {
+            return ss::make_ready_future<std::error_code>(
+              errc::partition_already_exists);
+        }
     }
 
     return f
@@ -347,12 +591,13 @@ ss::future<std::error_code> controller_backend::create_partition(
       .then([] { return make_error_code(errc::success); });
 }
 
-ss::future<std::error_code>
-controller_backend::delete_partition(model::ntp ntp, model::revision_id rev) {
+ss::future<std::error_code> controller_backend::delete_partition(
+  model::ntp ntp, model::revision_id rev, bool remove_ntp_dir) {
     auto part = _partition_manager.local().get(ntp);
     if (unlikely(part.get() == nullptr)) {
         return ss::make_ready_future<std::error_code>(errc::success);
     }
+
     // partition was already recreated with greater rev, do nothing
     if (unlikely(part->get_revision_id() > rev)) {
         return ss::make_ready_future<std::error_code>(errc::success);
@@ -368,9 +613,9 @@ controller_backend::delete_partition(model::ntp ntp, model::revision_id rev) {
                 leaders.remove_leader(ntp);
             });
       })
-      .then([this, ntp = std::move(ntp)] {
+      .then([this, ntp = std::move(ntp), remove_ntp_dir] {
           // remove partition
-          return _partition_manager.local().remove(ntp);
+          return _partition_manager.local().remove(ntp, remove_ntp_dir);
       })
       .then([] { return make_error_code(errc::success); });
 }

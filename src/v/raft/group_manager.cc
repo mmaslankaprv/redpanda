@@ -43,10 +43,13 @@ ss::future<> group_manager::stop() {
 
 ss::future<ss::lw_shared_ptr<raft::consensus>> group_manager::create_group(
   raft::group_id id, std::vector<model::broker> nodes, storage::log log) {
+    raft::group_configuration cfg(std::move(nodes));
+    // set initial revision
+    cfg.set_revision(log.config().get_revision());
     auto raft = ss::make_lw_shared<raft::consensus>(
       _self,
       id,
-      raft::group_configuration(std::move(nodes)),
+      std::move(cfg),
       raft::timeout_jitter(
         config::shard_local_cfg().raft_election_timeout_ms()),
       log,
