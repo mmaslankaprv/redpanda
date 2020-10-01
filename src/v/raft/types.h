@@ -231,6 +231,8 @@ struct vote_request {
     model::term_id prev_log_term;
     /// \brief true if vote triggered by leadership transfer
     bool leadership_transfer;
+    /// \brief group configuration revision
+    model::revision_id configuration_revision;
     raft::group_id target_group() const { return group; }
 };
 
@@ -443,6 +445,12 @@ template<>
 struct adl<raft::snapshot_metadata> {
     void to(iobuf& out, raft::snapshot_metadata&& request);
     raft::snapshot_metadata from(iobuf_parser& in);
+};
+
+template<>
+struct adl<raft::vote_request> {
+    void to(iobuf& out, raft::vote_request&& request);
+    raft::vote_request from(iobuf_parser& in);
 };
 
 } // namespace reflection

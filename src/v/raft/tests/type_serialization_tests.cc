@@ -249,3 +249,70 @@ SEASTAR_THREAD_TEST_CASE(snapshot_metadata_roundtrip) {
     BOOST_REQUIRE(d.cluster_time == ct);
     BOOST_REQUIRE_EQUAL(d.latest_configuration, cfg);
 }
+
+SEASTAR_THREAD_TEST_CASE(vote_request_backward_compatibility_test) {
+    raft::vote_request current_version;
+    current_version.node_id = model::node_id(20);
+    current_version.group = raft::group_id(1024);
+    current_version.term = model::term_id(2048);
+    current_version.prev_log_index = model::offset(4096);
+    current_version.prev_log_term = model::term_id(8192);
+    current_version.leadership_transfer = true;
+    current_version.configuration_revision = model::revision_id(512);
+
+    struct old_version {
+        model::node_id node_id;
+        raft::group_id group;
+        model::term_id term;
+        model::offset prev_log_index;
+        model::term_id prev_log_term;
+        bool leadership_transfer;
+    };
+
+    BOOST_TEST_MESSAGE("current version -> current version");
+    // # 1 current version -> current version
+    auto curr = current_version;
+    auto d_current_version = serialize_roundtrip_rpc(std::move(curr));
+    BOOST_REQUIRE_EQUAL(current_version.node_id, d_current_version.node_id);
+    BOOST_REQUIRE_EQUAL(current_version.term, d_current_version.term);
+    BOOST_REQUIRE_EQUAL(
+      current_version.prev_log_index, d_current_version.prev_log_index);
+    BOOST_REQUIRE_EQUAL(
+      current_version.leadership_transfer,
+      d_current_version.leadership_transfer);
+    BOOST_REQUIRE_EQUAL(
+      current_version.configuration_revision,
+      d_current_version.configuration_revision);
+
+    BOOST_TEST_MESSAGE("current version -> old version");
+    // # 2 current version -> old version
+    curr = current_version;
+    iobuf buf;
+    reflection::adl<raft::vote_request>{}.to(buf, std::move(curr));
+    iobuf_parser p(std::move(buf));
+    auto d_old = reflection::adl<old_version>{}.from(p);
+
+    BOOST_REQUIRE_EQUAL(current_version.node_id, d_old.node_id);
+    BOOST_REQUIRE_EQUAL(current_version.term, d_old.term);
+    BOOST_REQUIRE_EQUAL(current_version.prev_log_index, d_old.prev_log_index);
+    BOOST_REQUIRE_EQUAL(
+      current_version.leadership_transfer, d_old.leadership_transfer);
+
+    BOOST_TEST_MESSAGE("old version -> current version");
+    // # 3 old version -> current version
+    iobuf buf_2;
+    reflection::adl<old_version>{}.to(buf_2, std::move(d_old));
+    iobuf_parser p_2(std::move(buf_2));
+    auto d_current_from_old = reflection::adl<raft::vote_request>{}.from(p_2);
+
+    BOOST_REQUIRE_EQUAL(current_version.node_id, d_current_from_old.node_id);
+    BOOST_REQUIRE_EQUAL(current_version.term, d_current_from_old.term);
+    BOOST_REQUIRE_EQUAL(
+      current_version.prev_log_index, d_current_from_old.prev_log_index);
+    BOOST_REQUIRE_EQUAL(
+      current_version.leadership_transfer,
+      d_current_from_old.leadership_transfer);
+
+    BOOST_REQUIRE_EQUAL(
+      d_current_from_old.configuration_revision, model::revision_id{});
+}

@@ -1006,6 +1006,23 @@ ss::future<vote_reply> consensus::do_vote(vote_request&& r) {
             return ss::make_ready_future<vote_reply>(reply);
         }
     }
+    /**
+     * Do not grant vote if request comes from previous revision.
+     * This extension allow us to safely bring newly created partition replicas
+     * up to speed. Votes from the new replicas will not be granted until
+     * canididate will receive the same or newer configuration revision. (either
+     * via recovery or configuration update API)
+     */
+    auto current_rev = _configuration_manager.get_latest_revision();
+    if (r.configuration_revision < current_rev) {
+        vlog(
+          _ctxlog.trace,
+          "Vote request from previous revision: {}, current: {}",
+          r.configuration_revision,
+          current_rev);
+        reply.granted = false;
+        return ss::make_ready_future<vote_reply>(reply);
+    }
 
     // do not grant vote if log isn't ok
     if (!reply.log_ok) {

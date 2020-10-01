@@ -102,14 +102,15 @@ ss::future<> vote_stm::vote(bool leadership_transfer) {
             [this](model::node_id id) { _replies.emplace(id, vmeta{}); });
           auto lstats = _ptr->_log.offsets();
           auto last_entry_term = _ptr->get_last_entry_term(lstats);
-
+          auto current_rev = _ptr->_configuration_manager.get_latest_revision();
           _req = vote_request{
             _ptr->_self,
             _ptr->group(),
             _ptr->term(),
             lstats.dirty_offset,
             last_entry_term,
-            leadership_transfer};
+            leadership_transfer,
+            current_rev};
           // we have to self vote before dispatching vote request to
           // other nodes, this vote has to be done under op semaphore as
           // it changes voted_for state

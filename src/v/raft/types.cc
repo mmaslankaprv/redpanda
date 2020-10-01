@@ -10,6 +10,7 @@
 #include "raft/types.h"
 
 #include "model/fundamental.h"
+#include "model/metadata.h"
 #include "raft/consensus_utils.h"
 #include "reflection/adl.h"
 #include "utils/to_string.h"
@@ -528,5 +529,31 @@ void adl<raft::snapshot_metadata>::to(
       request.last_included_term,
       request.latest_configuration,
       request.cluster_time.time_since_epoch());
+}
+
+void adl<raft::vote_request>::to(iobuf& out, raft::vote_request&& request) {
+    serialize(
+      out,
+      request.node_id,
+      request.group,
+      request.term,
+      request.prev_log_index,
+      request.prev_log_term,
+      request.leadership_transfer,
+      request.configuration_revision);
+};
+
+raft::vote_request adl<raft::vote_request>::from(iobuf_parser& in) {
+    raft::vote_request res;
+    res.node_id = adl<model::node_id>{}.from(in);
+    res.group = adl<raft::group_id>{}.from(in);
+    res.term = adl<model::term_id>{}.from(in);
+    res.prev_log_index = adl<model::offset>{}.from(in);
+    res.prev_log_term = adl<model::term_id>{}.from(in);
+    res.leadership_transfer = adl<bool>{}.from(in);
+    if (in.bytes_left() > 0) {
+        res.configuration_revision = adl<model::revision_id>{}.from(in);
+    }
+    return res;
 }
 } // namespace reflection
