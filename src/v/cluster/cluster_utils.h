@@ -20,6 +20,7 @@
 
 #include <seastar/core/sharded.hh>
 
+#include <chrono>
 #include <utility>
 
 namespace cluster {
@@ -74,6 +75,7 @@ auto with_client(
   model::node_id id,
   unresolved_address addr,
   config::tls_config tls_config,
+  std::chrono::milliseconds max_backoff,
   Func&& f) {
     return update_broker_client(
              self, cache, id, std::move(addr), std::move(tls_config))

@@ -394,6 +394,10 @@ configuration::configuration()
       "sessions. Maximum time after which inactive session will be deleted is "
       "two time given configuration value"
       "cache",
+  , max_reconnect_backoff_ms(
+      *this,
+      "max_reconnect_backoff_ms",
+      "Max backoff time when reconnecting to other redpanda nodes",
       required::no,
       60s)
   , _advertised_kafka_api(

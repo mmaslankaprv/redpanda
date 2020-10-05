@@ -141,13 +141,20 @@ ss::future<> add_one_tcp_client(
   ss::sharded<rpc::connection_cache>& clients,
   model::node_id node,
   unresolved_address addr,
-  config::tls_config tls_config) {
+  config::tls_config tls_config,
+  std::chrono::milliseconds max_backoff) {
     return clients.invoke_on(
       owner,
-      [node, rpc_address = std::move(addr), tls_config = std::move(tls_config)](
-        rpc::connection_cache& cache) mutable {
+      [node,
+       rpc_address = std::move(addr),
+       tls_config = std::move(tls_config),
+       max_backoff](rpc::connection_cache& cache) mutable {
           return maybe_create_tcp_client(
-            cache, node, std::move(rpc_address), std::move(tls_config));
+            cache,
+            node,
+            std::move(rpc_address),
+            std::move(tls_config),
+            max_backoff);
       });
 }
 
@@ -161,14 +168,17 @@ ss::future<> update_broker_client(
     vlog(clusterlog.debug, "Adding {} TCP client on shards:{}", node, shards);
     return ss::do_with(
       std::move(shards),
-      [&clients, node, addr, tls_config = std::move(tls_config)](
+      [&clients, node, addr, tls_config = std::move(tls_config), max_backoff](
         std::vector<ss::shard_id>& shards) mutable {
           return ss::do_for_each(
             shards,
-            [node, addr, &clients, tls_config = std::move(tls_config)](
-              ss::shard_id shard) mutable {
+            [node,
+             addr,
+             &clients,
+             tls_config = std::move(tls_config),
+             max_backoff](ss::shard_id shard) mutable {
                 return add_one_tcp_client(
-                  shard, clients, node, addr, tls_config);
+                  shard, clients, node, addr, tls_config, max_backoff);
             });
       });
 }

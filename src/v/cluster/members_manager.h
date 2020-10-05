@@ -94,6 +94,7 @@ private:
     ss::sharded<storage::api>& _storage;
     ss::sharded<ss::abort_source>& _as;
     config::tls_config _rpc_tls_config;
+    std::chrono::milliseconds _max_reconnect_backoff;
     ss::gate _gate;
 };
 } // namespace cluster

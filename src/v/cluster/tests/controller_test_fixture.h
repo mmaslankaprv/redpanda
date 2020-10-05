@@ -125,6 +125,7 @@ public:
         set_configuration("election_timeout_ms", 500ms);
         set_configuration("raft_heartbeat_interval_ms", 75ms);
         set_configuration("join_retry_timeout_ms", 500ms);
+        set_configuration("max_reconnect_backoff_ms", 3000ms);
 
         using namespace std::chrono_literals;
         _storage

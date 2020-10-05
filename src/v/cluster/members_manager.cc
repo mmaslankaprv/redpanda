@@ -49,7 +49,9 @@ members_manager::members_manager(
   , _allocator(allocator)
   , _storage(storage)
   , _as(as)
-  , _rpc_tls_config(config::shard_local_cfg().rpc_server_tls()) {}
+  , _rpc_tls_config(config::shard_local_cfg().rpc_server_tls())
+  , _max_reconnect_backoff(
+      config::shard_local_cfg().max_reconnect_backoff_ms()) {}
 
 ss::future<> members_manager::start() {
     vlog(clusterlog.info, "starting cluster::members_manager...");
@@ -183,7 +185,8 @@ ss::future<> members_manager::update_connections(patch<broker_ptr> diff) {
                     _connection_cache,
                     b->id(),
                     b->rpc_address(),
-                    _rpc_tls_config);
+                    _rpc_tls_config,
+                    _max_reconnect_backoff);
               });
           });
     });
@@ -216,6 +219,7 @@ ss::future<result<join_reply>> members_manager::dispatch_join_to_remote(
       target.id,
       target.addr,
       _rpc_tls_config,
+      _max_reconnect_backoff,
       [joining_node = std::move(joining_node),
        tout = rpc::clock_type::now()
               + _join_timeout](controller_client_protocol c) mutable {
@@ -300,6 +304,7 @@ auto members_manager::dispatch_rpc_to_leader(Func&& f) {
       *leader_id,
       leader->rpc_address(),
       _rpc_tls_config,
+      _max_reconnect_backoff,
       std::forward<Func>(f));
 }
 
@@ -396,6 +401,7 @@ members_manager::do_dispatch_configuration_update(
       target.id(),
       target.rpc_address(),
       _rpc_tls_config,
+      _max_reconnect_backoff,
       [broker = std::move(updated_cfg),
        tout = rpc::clock_type::now() + _join_timeout,
        target_id = target.id()](controller_client_protocol c) mutable {
@@ -497,6 +503,7 @@ members_manager::handle_configuration_update_request(
              *leader_id,
              (*leader)->rpc_address(),
              _rpc_tls_config,
+             _max_reconnect_backoff,
              [tout, node = *node_ptr, target = *leader_id](
                controller_client_protocol c) mutable {
                  return c
