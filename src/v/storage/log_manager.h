@@ -151,6 +151,7 @@ struct log_config {
  */
 class log_manager {
 public:
+    using remove_dir = ss::bool_class<struct should_rm_dir_tag>;
     explicit log_manager(log_config, kvstore& kvstore) noexcept;
 
     ss::future<log> manage(ntp_config);
@@ -164,7 +165,7 @@ public:
      * revisted when we start removing partitions for other reasons, like
      * rebalancing partitions across the cluster, etc...
      */
-    ss::future<> remove(model::ntp);
+    ss::future<> remove(model::ntp, remove_dir);
 
     ss::future<> stop();
 

@@ -55,7 +55,8 @@ ss::future<> partition_manager::stop() {
       _ntp_table, [](auto& p) { return p.second->stop(); });
 }
 
-ss::future<> partition_manager::remove(const model::ntp& ntp) {
+ss::future<> partition_manager::remove(
+  const model::ntp& ntp, storage::log_manager::remove_dir remove_ntp_dir) {
     auto partition = get(ntp);
 
     if (!partition) {
@@ -73,7 +74,9 @@ ss::future<> partition_manager::remove(const model::ntp& ntp) {
     return _raft_manager.local()
       .remove(partition->raft())
       .then([partition] { return partition->stop(); })
-      .then([this, ntp] { return _storage.log_mgr().remove(ntp); })
+      .then([this, ntp, remove_ntp_dir] {
+          return _storage.log_mgr().remove(ntp, remove_ntp_dir);
+      })
       .finally([partition] {}); // in the end remove partition
 }
 

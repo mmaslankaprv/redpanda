@@ -615,7 +615,8 @@ ss::future<std::error_code> controller_backend::delete_partition(
       })
       .then([this, ntp = std::move(ntp), remove_ntp_dir] {
           // remove partition
-          return _partition_manager.local().remove(ntp, remove_ntp_dir);
+          return _partition_manager.local().remove(
+            ntp, storage::log_manager::remove_dir(remove_ntp_dir));
       })
       .then([] { return make_error_code(errc::success); });
 }

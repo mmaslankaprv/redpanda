@@ -60,7 +60,9 @@ public:
     ss::future<consensus_ptr>
       manage(storage::ntp_config, raft::group_id, std::vector<model::broker>);
 
-    ss::future<> remove(const model::ntp& ntp);
+    ss::future<> remove(
+      const model::ntp& ntp,
+      storage::log_manager::remove_dir = storage::log_manager::remove_dir::yes);
 
     std::optional<storage::log> log(const model::ntp& ntp) {
         return _storage.log_mgr().get(ntp);
