@@ -400,6 +400,12 @@ configuration::configuration()
       "Max backoff time when reconnecting to other redpanda nodes",
       required::no,
       60s)
+  , decomission_monitor_retry_ms(
+      *this,
+      "decomission_monitor_retry_ms",
+      "Time between node decomissioning retries ",
+      required::no,
+      5s)
   , _advertised_kafka_api(
       *this,
       "advertised_kafka_api",

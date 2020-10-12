@@ -38,6 +38,7 @@ v_cc_library(
     controller.cc
     partition.cc
     partition_probe.cc
+    decommissioning_monitor.cc
   DEPS
     Seastar::seastar
     controller_rpc

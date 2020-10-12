@@ -12,6 +12,7 @@
 #pragma once
 
 #include "cluster/errc.h"
+#include "config/rjson_serialization.h"
 #include "model/adl_serde.h"
 #include "model/fundamental.h"
 #include "model/metadata.h"
@@ -23,6 +24,7 @@
 #include "utils/to_string.h"
 
 #include <fmt/ostream.h>
+
 namespace raft {
 class consensus;
 }
@@ -186,8 +188,27 @@ private:
     ss::sstring _msg;
 };
 
+struct node_op_result {
+    enum class state {
+        decommission_in_progress,
+        error,
+        decomission_finished,
+        recommissioned
+    };
+    using node_state = std::pair<model::node_id, state>;
+
+    std::vector<node_state> nodes;
+};
+
+std::ostream& operator<<(std::ostream&, node_op_result::state);
+
 } // namespace cluster
 
+namespace json {
+void rjson_serialize(
+  rapidjson::Writer<rapidjson::StringBuffer>& w,
+  const cluster::node_op_result& v);
+}
 namespace reflection {
 
 template<>

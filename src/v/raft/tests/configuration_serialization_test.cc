@@ -16,6 +16,8 @@
 
 #include <seastar/testing/thread_test_case.hh>
 
+#include <optional>
+
 std::vector<model::broker> random_brokers() {
     std::vector<model::broker> ret;
     for (auto i = 0; i < random_generators::get_int(5, 10); ++i) {
@@ -25,6 +27,7 @@ std::vector<model::broker> random_brokers() {
 }
 
 raft::group_configuration random_configuration() {
+    auto version = random_generators::get_int(0, 2);
     auto brokers = random_brokers();
     raft::group_nodes current;
     for (auto& b : brokers) {
@@ -32,6 +35,13 @@ raft::group_configuration random_configuration() {
             current.voters.push_back(b.id());
         } else {
             current.learners.push_back(b.id());
+        }
+    }
+
+    std::vector<model::node_id> decommissioned;
+    for (auto& b : brokers) {
+        if (random_generators::get_int(0, 100) > 50) {
+            decommissioned.push_back(b.id());
         }
     }
 
@@ -44,6 +54,7 @@ raft::group_configuration random_configuration() {
                 old.learners.push_back(b.id());
             }
         }
+
         return raft::group_configuration(
           std::move(brokers),
           std::move(current),
@@ -51,7 +62,11 @@ raft::group_configuration random_configuration() {
           std::move(old));
     } else {
         return raft::group_configuration(
-          std::move(brokers), std::move(current), model::revision_id(0));
+          std::move(brokers),
+          std::move(current),
+          model::revision_id(0),
+          std::nullopt,
+          std::move(decommissioned));
     }
 }
 

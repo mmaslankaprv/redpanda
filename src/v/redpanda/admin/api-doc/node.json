@@ -1,0 +1,40 @@
+"/v1/nodes/decommission": {
+    "post": {
+        "summary": "mark nodes as decommissioned",
+        "operationId": "decommission_nodes",
+        "parameters": [
+            {
+                "name": "node_id",
+                "in": "query",
+                "required": true,
+                "type": "integer",
+                "allowMultiple": true
+            }
+        ],
+        "responses": {
+            "200": {
+                "description": "Nodes decommissioned"
+            }
+        }
+    }
+},
+"/v1/nodes/recommission": {
+    "post": {
+        "summary": "remove decommissioned flag from nodes",
+        "operationId": "recommission_nodes",
+        "parameters": [
+            {
+                "name": "node_id",
+                "in": "query",
+                "required": true,
+                "type": "integer",
+                "allowMultiple": true
+            }
+        ],
+        "responses": {
+            "200": {
+                "description": "Nodes recommissioned"
+            }
+        }
+    }
+}
