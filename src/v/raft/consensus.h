@@ -18,6 +18,7 @@
 #include "raft/event_manager.h"
 #include "raft/follower_stats.h"
 #include "raft/logger.h"
+#include "raft/mutex_buffer.h"
 #include "raft/prevote_stm.h"
 #include "raft/probe.h"
 #include "raft/replicate_batcher.h"
@@ -372,6 +373,8 @@ private:
     configuration_manager _configuration_manager;
     model::offset _last_visible_index;
     offset_monitor _consumable_offset_monitor;
+    details::mutex_buffer<append_entries_request, append_entries_reply>
+      _append_requests_buffer;
     friend std::ostream& operator<<(std::ostream&, const consensus&);
 };
 

@@ -65,7 +65,8 @@ consensus::consensus(
   , _storage(storage)
   , _snapshot_mgr(
       std::filesystem::path(_log.config().work_directory()), _io_priority)
-  , _configuration_manager(std::move(initial_cfg), _group, _storage, _ctxlog) {
+  , _configuration_manager(std::move(initial_cfg), _group, _storage, _ctxlog)
+  , _append_requests_buffer(_op_lock) {
     setup_metrics();
     update_follower_stats(_configuration_manager.get_latest());
     _vote_timeout.set_callback([this] {
@@ -129,6 +130,7 @@ ss::future<> consensus::stop() {
     _commit_index_updated.broken();
 
     return _event_manager.stop()
+      .then([this] { return _append_requests_buffer.stop(); })
       .then([this] { return _bg.close(); })
       .then([this] { return _batcher.stop(); })
       .then([this] {
@@ -712,7 +714,13 @@ ss::future<> consensus::start() {
                     _ctxlog.trace, "Recovered commit_index: {}", _commit_index);
               }
           })
-          .then([this] { return _event_manager.start(); });
+          .then([this] { return _event_manager.start(); })
+          .then([this] {
+              _append_requests_buffer.start(
+                [this](append_entries_request&& request) {
+                    return do_append_entries(std::move(request));
+                });
+          });
     });
 }
 
@@ -924,9 +932,7 @@ ss::future<vote_reply> consensus::do_vote(vote_request&& r) {
 ss::future<append_entries_reply>
 consensus::append_entries(append_entries_request&& r) {
     return with_gate(_bg, [this, r = std::move(r)]() mutable {
-        return _op_lock.with([this, r = std::move(r)]() mutable {
-            return do_append_entries(std::move(r));
-        });
+        return _append_requests_buffer.enqueue(std::move(r));
     });
 }
 
