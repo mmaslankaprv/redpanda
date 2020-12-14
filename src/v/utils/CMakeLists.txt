@@ -8,6 +8,7 @@ v_cc_library(
     file_io.cc
     base64.cc
     retry_chain_node.cc
+    hist_helper.cc
   DEPS
     Seastar::seastar
     Hdrhistogram::hdr_histogram
