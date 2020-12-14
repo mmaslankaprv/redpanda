@@ -7,6 +7,7 @@ v_cc_library(
     human.cc
     state_crc_file.cc
     base64.cc
+    hist_helper.cc
   DEPS
     Seastar::seastar
     Hdrhistogram::hdr_histogram
