@@ -34,7 +34,7 @@
 namespace kafka {
 
 static constexpr std::chrono::milliseconds fetch_reads_debounce_timeout
-  = std::chrono::milliseconds(5);
+  = std::chrono::milliseconds(1);
 
 void fetch_request::encode(response_writer& writer, api_version version) {
     writer.write(replica_id());
