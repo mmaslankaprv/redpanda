@@ -397,6 +397,9 @@ enum class metadata_key : int8_t {
     last_applied_offset = 3,
 };
 
+// priority used to implement semi-deterministic leader election
+using voter_priority = named_type<uint32_t, struct voter_priority_tag>;
+
 std::ostream& operator<<(std::ostream& o, const consistency_level& l);
 std::ostream& operator<<(std::ostream& o, const protocol_metadata& m);
 std::ostream& operator<<(std::ostream& o, const vote_reply& r);
