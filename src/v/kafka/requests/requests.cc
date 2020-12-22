@@ -32,6 +32,7 @@
 #include "kafka/requests/sasl_authenticate_request.h"
 #include "kafka/requests/sasl_handshake_request.h"
 #include "kafka/requests/sync_group_request.h"
+#include "utils/hist_helper.h"
 #include "utils/to_string.h"
 #include "vlog.h"
 
@@ -102,16 +103,24 @@ process_request(request_context&& ctx, ss::smp_service_group g) {
         return do_process<list_groups_api>(std::move(ctx), g);
     case find_coordinator_api::key:
         return do_process<find_coordinator_api>(std::move(ctx), g);
-    case offset_fetch_api::key:
-        return do_process<offset_fetch_api>(std::move(ctx), g);
-    case produce_api::key:
-        return do_process<produce_api>(std::move(ctx), g);
+    case offset_fetch_api::key: {
+        static thread_local hist_helper h("kafka-process-offset-fetch");
+        return h.measure(do_process<offset_fetch_api>(std::move(ctx), g));
+    }
+    case produce_api::key: {
+        static thread_local hist_helper h_prod("kafka-process-produce");
+        return h_prod.measure(do_process<produce_api>(std::move(ctx), g));
+    }
     case list_offsets_api::key:
         return do_process<list_offsets_api>(std::move(ctx), g);
-    case offset_commit_api::key:
-        return do_process<offset_commit_api>(std::move(ctx), g);
-    case fetch_api::key:
-        return do_process<fetch_api>(std::move(ctx), g);
+    case offset_commit_api::key: {
+        static thread_local hist_helper h("kafka-process-offset-commit");
+        return h.measure(do_process<offset_commit_api>(std::move(ctx), g));
+    }
+    case fetch_api::key: {
+        static thread_local hist_helper h("kafka-process-fetch");
+        return h.measure(do_process<fetch_api>(std::move(ctx), g));
+    }
     case join_group_api::key:
         return do_process<join_group_api>(std::move(ctx), g);
     case heartbeat_api::key:

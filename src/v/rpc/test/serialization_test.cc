@@ -8,11 +8,18 @@
 // by the Apache License, Version 2.0
 
 #include "bytes/iobuf.h"
+#include "model/metadata.h"
 #include "reflection/adl.h"
 #include "reflection/arity.h"
+#include "rpc/connection_cache.h"
 #include "rpc/test/test_types.h"
 
+#include <seastar/core/smp.hh>
 #include <seastar/testing/thread_test_case.hh>
+
+#include <fmt/core.h>
+
+#include <vector>
 
 SEASTAR_THREAD_TEST_CASE(serialize_pod) {
     auto b = iobuf();
@@ -78,4 +85,28 @@ SEASTAR_THREAD_TEST_CASE(serialize_sstring_vector) {
       */
       117;
     BOOST_CHECK_EQUAL(b.size_bytes(), expected);
+}
+
+SEASTAR_THREAD_TEST_CASE(test_shards) {
+    std::vector<model::node_id> cluster = {
+      model::node_id(0), model::node_id(1), model::node_id(2)};
+    ss::shard_id total_shards = 16;
+    for (auto src : cluster) {
+        for (auto n : cluster) {
+            if (src == n) {
+                continue;
+            }
+            std::set<ss::shard_id> shards;
+            for (ss::shard_id i = 0; i < total_shards; ++i) {
+                auto sh = rpc::connection_cache::shard_for(
+                  src, i, n, total_shards);
+                shards.insert(sh);
+            }
+            std::cout << fmt::format("{}->{} : [", src, n);
+            for (auto s : shards) {
+                std::cout << s << " ";
+            }
+            std::cout << "]" << std::endl;
+        }
+    }
 }

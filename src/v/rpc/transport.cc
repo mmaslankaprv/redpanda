@@ -231,6 +231,13 @@ void transport::dispatch_send() {
     (void)ss::with_gate(_dispatch_gate, [this]() mutable {
         return ss::do_until(
           [this] {
+              if (
+                !_requests_queue.empty()
+                && _requests_queue.begin()->first
+                     > (_last_seq + sequence_t(1))) {
+                  std::cout << "REORDERING" << _requests_queue.begin()->first
+                            << _last_seq << _seq << std::endl;
+              }
               return _requests_queue.empty()
                      || _requests_queue.begin()->first
                           > (_last_seq + sequence_t(1));

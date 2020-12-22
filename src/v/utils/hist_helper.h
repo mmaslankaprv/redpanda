@@ -35,7 +35,7 @@ public:
                 }
             });
             _printing_timer.arm_periodic(5s);
-            _reset_timer.arm_periodic(60s);
+            _reset_timer.arm_periodic(16s);
         }
     }
 

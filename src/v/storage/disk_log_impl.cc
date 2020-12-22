@@ -23,6 +23,7 @@
 #include "storage/segment_utils.h"
 #include "storage/types.h"
 #include "storage/version.h"
+#include "utils/hist_helper.h"
 #include "vassert.h"
 #include "vlog.h"
 
@@ -597,7 +598,8 @@ ss::future<> disk_log_impl::flush() {
     if (_segs.empty()) {
         return ss::make_ready_future<>();
     }
-    return _segs.back()->flush();
+    static thread_local hist_helper h("log-flush");
+    return h.measure(_segs.back()->flush());
 }
 
 size_t disk_log_impl::max_segment_size() const {

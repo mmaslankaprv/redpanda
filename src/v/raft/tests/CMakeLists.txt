@@ -40,3 +40,11 @@ rp_test(
   LIBRARIES v::seastar_testing_main v::raft v::storage_test_utils
   LABELS raft
 )
+
+rp_test(
+  UNIT_TEST
+  BINARY_NAME test_co
+  SOURCES  mutex_buffer_test_new.cc
+  LIBRARIES v::seastar_testing_main v::raft v::storage_test_utils
+  LABELS raft
+)

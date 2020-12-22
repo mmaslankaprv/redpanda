@@ -21,6 +21,7 @@
 #include "raft/raftgen_service.h"
 #include "raft/types.h"
 #include "rpc/types.h"
+#include "utils/hist_helper.h"
 
 #include <chrono>
 
@@ -70,7 +71,8 @@ ss::future<result<append_entries_reply>> replicate_entries_stm::do_dispatch_one(
         _dispatch_sem.signal();
         return f;
     }
-    return send_append_entries_request(n, std::move(req));
+    static thread_local hist_helper h("replicate-stm-send-request");
+    return h.measure(send_append_entries_request(n, std::move(req)));
 }
 
 clock_type::time_point replicate_entries_stm::append_entries_timeout() {
@@ -171,7 +173,9 @@ replicate_entries_stm::apply(ss::semaphore_units<> u) {
             _ptr->suppress_heartbeats(rni, _followers_seq[rni], true);
         }
     });
-    return append_to_self()
+    static thread_local hist_helper h("replicate-stm-self-append");
+
+    return h.measure(append_to_self())
       .then([this, u = std::move(u), cfg = std::move(cfg)](
               result<storage::append_result> append_result) mutable {
           if (!append_result) {
@@ -223,8 +227,9 @@ replicate_entries_stm::apply(ss::semaphore_units<> u) {
               return _ptr->committed_offset() >= appended_offset
                      || _ptr->term() > appended_term;
           };
-          return _ptr->_commit_index_updated.wait(stop_cond).then(
-            [this, appended_offset, appended_term] {
+          static thread_local hist_helper h("replicate-stm-wait-for-commit");
+          return h.measure(_ptr->_commit_index_updated.wait(stop_cond))
+            .then([this, appended_offset, appended_term] {
                 return process_result(appended_offset, appended_term);
             });
       });

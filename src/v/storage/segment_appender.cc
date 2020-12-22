@@ -13,6 +13,7 @@
 #include "likely.h"
 #include "storage/chunk_cache.h"
 #include "storage/logger.h"
+#include "utils/hist_helper.h"
 #include "vassert.h"
 #include "vlog.h"
 
@@ -414,13 +415,18 @@ ss::future<> segment_appender::flush() {
     if (_head && _head->bytes_pending()) {
         dispatch_background_head_write();
     }
-    return ss::with_semaphore(
-             _concurrent_flushes,
-             ss::semaphore::max_counter(),
-             [this]() mutable { return _out.flush(); })
-      .handle_exception([this](std::exception_ptr e) {
-          vassert(false, "Could not flush: {} - {}", e, *this);
-      });
+    static thread_local hist_helper h("appender-flush");
+    return h.measure(ss::with_semaphore(
+                       _concurrent_flushes,
+                       ss::semaphore::max_counter(),
+                       [this]() mutable {
+                           static thread_local hist_helper h(
+                             "output-stream-flush");
+                           return h.measure(_out.flush());
+                       })
+                       .handle_exception([this](std::exception_ptr e) {
+                           vassert(false, "Could not flush: {} - {}", e, *this);
+                       }));
 }
 
 std::ostream& operator<<(std::ostream& o, const segment_appender& a) {

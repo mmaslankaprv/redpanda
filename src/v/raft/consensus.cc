@@ -24,6 +24,7 @@
 #include "raft/types.h"
 #include "raft/vote_stm.h"
 #include "reflection/adl.h"
+#include "utils/hist_helper.h"
 #include "utils/state_crc_file.h"
 #include "utils/state_crc_file_errc.h"
 #include "vlog.h"
@@ -419,9 +420,9 @@ consensus::replicate(model::record_batch_reader&& rdr, replicate_options opts) {
     if (opts.consistency == consistency_level::quorum_ack) {
         _probe.replicate_requests_ack_all();
         return ss::with_gate(_bg, [this, rdr = std::move(rdr)]() mutable {
-            return _batcher.replicate(std::move(rdr)).finally([this] {
-                _probe.replicate_done();
-            });
+            static thread_local hist_helper h("raft-replicate");
+            return h.measure(_batcher.replicate(std::move(rdr)))
+              .finally([this] { _probe.replicate_done(); });
         });
     }
 
@@ -1093,7 +1094,8 @@ ss::future<vote_reply> consensus::do_vote(vote_request&& r) {
 ss::future<append_entries_reply>
 consensus::append_entries(append_entries_request&& r) {
     return with_gate(_bg, [this, r = std::move(r)]() mutable {
-        return _append_requests_buffer.enqueue(std::move(r));
+        static thread_local hist_helper h("raft-append-entries");
+        return h.measure(_append_requests_buffer.enqueue(std::move(r)));
     });
 }
 

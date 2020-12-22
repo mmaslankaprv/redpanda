@@ -23,6 +23,7 @@
 #include "model/timestamp.h"
 #include "raft/types.h"
 #include "storage/shard_assignment.h"
+#include "utils/hist_helper.h"
 #include "utils/remote.h"
 #include "utils/to_string.h"
 #include "vlog.h"
@@ -454,8 +455,8 @@ produce_api::process(request_context&& ctx, ss::smp_service_group ssg) {
         return ctx.respond(
           request.make_error_response(error_code::invalid_required_acks));
     }
-
-    return ss::do_with(
+    static thread_local hist_helper h("kafka-produce");
+    return h.measure(ss::do_with(
       produce_ctx(std::move(ctx), std::move(request), ssg),
       [](produce_ctx& octx) {
           vlog(klog.trace, "handling produce request {}", octx.request);
@@ -509,7 +510,7 @@ produce_api::process(request_context&& ctx, ss::smp_service_group ssg) {
                     "response: {}",
                     octx.response)));
             });
-      });
+      }));
 }
 
 } // namespace kafka
