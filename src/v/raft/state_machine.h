@@ -88,6 +88,9 @@ public:
     ss::future<result<replicate_result>>
       quorum_write_empty_batch(model::timeout_clock::time_point);
 
+protected:
+    ss::gate& gate() { return _gate; }
+
 private:
     class batch_applicator {
     public:
