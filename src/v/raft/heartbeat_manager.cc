@@ -13,6 +13,7 @@
 #include "model/metadata.h"
 #include "model/timeout_clock.h"
 #include "outcome_future_utils.h"
+#include "raft/configuration.h"
 #include "raft/consensus_client_protocol.h"
 #include "raft/errc.h"
 #include "raft/raftgen_service.h"
@@ -35,7 +36,7 @@ using consensus_set = heartbeat_manager::consensus_set;
 static std::vector<heartbeat_manager::node_heartbeat> requests_for_range(
   const consensus_set& c, clock_type::duration heartbeat_interval) {
     absl::flat_hash_map<
-      model::node_id,
+      vnode,
       std::vector<std::pair<protocol_metadata, follower_req_seq>>>
       pending_beats;
     if (c.empty()) {
@@ -51,26 +52,26 @@ static std::vector<heartbeat_manager::node_heartbeat> requests_for_range(
         auto maybe_create_follower_request = [ptr,
                                               last_heartbeat,
                                               &pending_beats](
-                                               const model::broker& n) mutable {
+                                               const vnode& rni) mutable {
             // special case self beat
             // self beat is used to make sure that the protocol will make
             // progress when there is only on node
-            if (n.id() == ptr->self()) {
-                pending_beats[n.id()].emplace_back(ptr->meta(), 0);
+            if (rni == ptr->self()) {
+                pending_beats[rni].emplace_back(ptr->meta(), 0);
                 return;
             }
-            
-            if (ptr->are_heartbeats_suppressed(n.id())) {
+
+            if (ptr->are_heartbeats_suppressed(rni)) {
                 return;
             }
-            auto last_append_timestamp = ptr->last_append_timestamp(n.id());
+            auto last_append_timestamp = ptr->last_append_timestamp(rni);
 
             if (last_append_timestamp > last_heartbeat) {
                 vlog(
                   hbeatlog.trace,
                   "Skipping sending beat to {} gr: {} last hb {}, last append "
                   "{}",
-                  n.id(),
+                  rni,
                   ptr->group(),
                   last_heartbeat.time_since_epoch().count(),
                   last_append_timestamp.time_since_epoch().count());
@@ -78,13 +79,13 @@ static std::vector<heartbeat_manager::node_heartbeat> requests_for_range(
                 return;
             }
 
-            auto seq_id = ptr->next_follower_sequence(n.id());
-            pending_beats[n.id()].emplace_back(ptr->meta(), seq_id);
+            auto seq_id = ptr->next_follower_sequence(rni);
+            pending_beats[rni].emplace_back(ptr->meta(), seq_id);
         };
 
         auto group = ptr->config();
         // collect voters
-        group.for_each_broker(maybe_create_follower_request);
+        group.for_each_broker_id(maybe_create_follower_request);
     }
 
     std::vector<heartbeat_manager::node_heartbeat> reqs;
@@ -130,7 +131,7 @@ heartbeat_manager::send_heartbeats(std::vector<node_heartbeat> reqs) {
                  futures.reserve(reqs.size());
                  for (auto& r : reqs) {
                      // self heartbeat
-                     if (r.target == _self) {
+                     if (r.target.id() == _self) {
                          futures.push_back(do_self_heartbeat(std::move(r)));
                          continue;
                      }
@@ -187,7 +188,7 @@ ss::future<> heartbeat_manager::do_heartbeat(node_heartbeat&& r) {
 }
 
 void heartbeat_manager::process_reply(
-  model::node_id n,
+  vnode n,
   absl::flat_hash_map<raft::group_id, follower_request_meta> groups,
   result<heartbeat_reply> r) {
     if (!r) {

@@ -22,6 +22,10 @@
 
 namespace raft {
 
+std::ostream& operator<<(std::ostream& o, const vnode& id) {
+    return o << "{id: " << id.id() << ", revision: " << id.revision() << "}";
+}
+
 std::ostream& operator<<(std::ostream& o, const append_entries_reply& r) {
     return o << "{node_id: " << r.node_id << ", group: " << r.group
              << ", term:" << r.term
@@ -179,7 +183,7 @@ async_adl<raft::append_entries_request>::from(iobuf_parser& in) {
     }
     auto reader = model::make_memory_record_batch_reader(std::move(batches));
     auto meta = reflection::adl<raft::protocol_metadata>{}.from(in);
-    auto n = reflection::adl<model::node_id>{}.from(in);
+    auto n = reflection::adl<raft::vnode>{}.from(in);
     auto flush
       = reflection::adl<raft::append_entries_request::flush_after_append>{}
           .from(in);
@@ -322,7 +326,7 @@ ss::future<> async_adl<raft::heartbeat_request>::to(
           }
           // important to release this memory after this function
           // request.meta = {}; // release memory
-          adl<model::node_id>{}.to(out, request.node_id);
+          adl<raft::vnode>{}.to(out, request.node_id);
           adl<uint32_t>{}.to(out, size);
           return encodee;
       })
@@ -348,7 +352,7 @@ T decode_signed(T value) {
 ss::future<raft::heartbeat_request>
 async_adl<raft::heartbeat_request>::from(iobuf_parser& in) {
     raft::heartbeat_request req;
-    req.node_id = adl<model::node_id>{}.from(in);
+    req.node_id = adl<raft::vnode>{}.from(in);
     req.meta = std::vector<raft::protocol_metadata>(adl<uint32_t>{}.from(in));
     if (req.meta.empty()) {
         return ss::make_ready_future<raft::heartbeat_request>(std::move(req));
@@ -414,7 +418,7 @@ ss::future<> async_adl<raft::heartbeat_reply>::to(
     }
 
     // replies are comming from the same node
-    adl<model::node_id>{}.to(out, reply.meta.front().node_id);
+    adl<raft::vnode>{}.to(out, reply.meta.front().node_id);
 
     std::sort(reply.meta.begin(), reply.meta.end(), sorter_fn{});
     internal::hbeat_response_array encodee(reply.meta.size());
@@ -456,7 +460,7 @@ async_adl<raft::heartbeat_reply>::from(iobuf_parser& in) {
         return ss::make_ready_future<raft::heartbeat_reply>(std::move(reply));
     }
 
-    auto node_id = adl<model::node_id>{}.from(in);
+    auto node_id = adl<raft::vnode>{}.from(in);
 
     size_t size = reply.meta.size();
     reply.meta[0].node_id = node_id;

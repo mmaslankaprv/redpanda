@@ -29,9 +29,11 @@ raft::group_configuration random_configuration() {
     raft::group_nodes current;
     for (auto& b : brokers) {
         if (random_generators::get_int(0, 100) > 50) {
-            current.voters.push_back(b.id());
+            current.voters.emplace_back(
+              b.id(), model::revision_id(random_generators::get_int(100)));
         } else {
-            current.learners.push_back(b.id());
+            current.learners.emplace_back(
+              b.id(), model::revision_id(random_generators::get_int(100)));
         }
     }
 
@@ -39,9 +41,11 @@ raft::group_configuration random_configuration() {
         raft::group_nodes old;
         for (auto& b : brokers) {
             if (random_generators::get_int(0, 100) > 50) {
-                old.voters.push_back(b.id());
+                old.voters.emplace_back(
+                  b.id(), model::revision_id(random_generators::get_int(100)));
             } else {
-                old.learners.push_back(b.id());
+                old.learners.emplace_back(
+                  b.id(), model::revision_id(random_generators::get_int(100)));
             }
         }
         return raft::group_configuration(

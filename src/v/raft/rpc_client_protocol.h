@@ -33,19 +33,19 @@ public:
       , _connection_cache(cache) {}
 
     ss::future<result<vote_reply>>
-    vote(model::node_id, vote_request&&, rpc::client_opts) final;
+    vote(vnode, vote_request&&, rpc::client_opts) final;
 
-    ss::future<result<append_entries_reply>> append_entries(
-      model::node_id, append_entries_request&&, rpc::client_opts) final;
+    ss::future<result<append_entries_reply>>
+    append_entries(vnode, append_entries_request&&, rpc::client_opts) final;
 
     ss::future<result<heartbeat_reply>>
-    heartbeat(model::node_id, heartbeat_request&&, rpc::client_opts) final;
+    heartbeat(vnode, heartbeat_request&&, rpc::client_opts) final;
 
-    ss::future<result<install_snapshot_reply>> install_snapshot(
-      model::node_id, install_snapshot_request&&, rpc::client_opts) final;
+    ss::future<result<install_snapshot_reply>>
+    install_snapshot(vnode, install_snapshot_request&&, rpc::client_opts) final;
 
     ss::future<result<timeout_now_reply>>
-    timeout_now(model::node_id, timeout_now_request&&, rpc::client_opts) final;
+    timeout_now(vnode, timeout_now_request&&, rpc::client_opts) final;
 
 private:
     model::node_id _self;

@@ -9,17 +9,19 @@
 
 #include "raft/follower_stats.h"
 
+#include "raft/configuration.h"
+
 namespace raft {
 void follower_stats::update_with_configuration(const group_configuration& cfg) {
-    cfg.for_each_broker([this](const model::broker& n) {
-        if (n.id() == _self || _followers.contains(n.id())) {
+    cfg.for_each_broker_id([this](const vnode& rni) {
+        if (rni == _self || _followers.contains(rni)) {
             return;
         }
-        _followers.emplace(n.id(), follower_index_metadata(n.id()));
+        _followers.emplace(rni, follower_index_metadata(rni));
     });
 
     for (auto it = _followers.cbegin(); it != _followers.cend();) {
-        if (!cfg.contains_broker(it->first)) {
+        if (!cfg.contains(it->first)) {
             _followers.erase(it++);
         } else {
             ++it;

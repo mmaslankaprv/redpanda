@@ -8,6 +8,7 @@
 // by the Apache License, Version 2.0
 
 #include "compression/stream_zstd.h"
+#include "model/metadata.h"
 #include "model/record.h"
 #include "model/record_batch_reader.h"
 #include "model/timeout_clock.h"
@@ -73,12 +74,15 @@ SEASTAR_THREAD_TEST_CASE(append_entries_requests) {
       .last_visible_index = model::offset(200),
     };
     raft::append_entries_request req(
-      model::node_id(1), meta, std::move(readers.back()));
+      raft::vnode(model::node_id(1), model::revision_id(10)),
+      meta,
+      std::move(readers.back()));
 
     readers.pop_back();
     auto d = async_serialize_roundtrip_rpc(std::move(req)).get0();
 
-    BOOST_REQUIRE_EQUAL(d.node_id, model::node_id(1));
+    BOOST_REQUIRE_EQUAL(
+      d.node_id, raft::vnode(model::node_id(1), model::revision_id(10)));
     BOOST_REQUIRE_EQUAL(d.meta.group, meta.group);
     BOOST_REQUIRE_EQUAL(d.meta.commit_index, meta.commit_index);
     BOOST_REQUIRE_EQUAL(d.meta.term, meta.term);
@@ -111,7 +115,7 @@ model::broker create_test_broker() {
 SEASTAR_THREAD_TEST_CASE(heartbeat_request_roundtrip) {
     static constexpr int64_t one_k = 1'000;
     raft::heartbeat_request req;
-    req.node_id = model::node_id(one_k);
+    req.node_id = raft::vnode(model::node_id(one_k), model::revision_id(1));
     req.meta = std::vector<raft::protocol_metadata>(one_k);
     for (int64_t i = 0; i < one_k; ++i) {
         req.meta[i].group = raft::group_id(i);
@@ -144,7 +148,7 @@ SEASTAR_THREAD_TEST_CASE(heartbeat_request_roundtrip) {
 SEASTAR_THREAD_TEST_CASE(heartbeat_request_roundtrip_with_negative) {
     static constexpr int64_t one_k = 10;
     raft::heartbeat_request req;
-    req.node_id = model::node_id(one_k);
+    req.node_id = raft::vnode(model::node_id(one_k), model::revision_id(12));
     req.meta = std::vector<raft::protocol_metadata>(one_k);
     for (int64_t i = 0; i < one_k; ++i) {
         req.meta[i].group = raft::group_id(i);
@@ -185,7 +189,7 @@ SEASTAR_THREAD_TEST_CASE(heartbeat_response_roundtrip) {
                          + model::offset(random_generators::get_int(10000));
 
         reply.meta.push_back(raft::append_entries_reply{
-          .node_id = model::node_id(1),
+          .node_id = raft::vnode(model::node_id(1), model::revision_id(10)),
           .group = raft::group_id(i),
           .term = model::term_id(random_generators::get_int(-1, 1000)),
           .last_committed_log_index = commited_idx,
@@ -230,7 +234,9 @@ SEASTAR_THREAD_TEST_CASE(snapshot_metadata_roundtrip) {
     auto n3 = tests::random_broker(0, 100);
     std::vector<model::broker> nodes{n1, n2, n3};
     raft::group_nodes current{
-      .voters = {n1.id(), n3.id()}, .learners = {n2.id()}};
+      .voters
+      = {raft::vnode(n1.id(), model::revision_id(1)), raft::vnode(n3.id(), model::revision_id(3))},
+      .learners = {raft::vnode(n2.id(), model::revision_id(1))}};
 
     raft::group_configuration cfg(nodes, current, model::revision_id(0));
 

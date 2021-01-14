@@ -25,7 +25,7 @@ namespace raft {
 using namespace std::chrono_literals;
 
 recovery_stm::recovery_stm(
-  consensus* p, model::node_id node_id, ss::io_priority_class prio)
+  consensus* p, vnode node_id, ss::io_priority_class prio)
   : _ptr(p)
   , _node_id(node_id)
   , _term(_ptr->term())

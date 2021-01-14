@@ -27,22 +27,20 @@ class consensus_client_protocol final {
 public:
     struct impl {
         virtual ss::future<result<vote_reply>>
-        vote(model::node_id, vote_request&&, rpc::client_opts) = 0;
+        vote(vnode, vote_request&&, rpc::client_opts) = 0;
 
-        virtual ss::future<result<append_entries_reply>> append_entries(
-          model::node_id, append_entries_request&&, rpc::client_opts)
-          = 0;
+        virtual ss::future<result<append_entries_reply>>
+        append_entries(vnode, append_entries_request&&, rpc::client_opts) = 0;
 
         virtual ss::future<result<heartbeat_reply>>
-        heartbeat(model::node_id, heartbeat_request&&, rpc::client_opts) = 0;
+        heartbeat(vnode, heartbeat_request&&, rpc::client_opts) = 0;
 
-        virtual ss::future<result<install_snapshot_reply>> install_snapshot(
-          model::node_id, install_snapshot_request&&, rpc::client_opts)
+        virtual ss::future<result<install_snapshot_reply>>
+        install_snapshot(vnode, install_snapshot_request&&, rpc::client_opts)
           = 0;
 
         virtual ss::future<result<timeout_now_reply>>
-        timeout_now(model::node_id, timeout_now_request&&, rpc::client_opts)
-          = 0;
+        timeout_now(vnode, timeout_now_request&&, rpc::client_opts) = 0;
 
         virtual ~impl() noexcept = default;
     };
@@ -51,34 +49,28 @@ public:
     explicit consensus_client_protocol(ss::shared_ptr<impl> i)
       : _impl(std::move(i)) {}
     ss::future<result<vote_reply>>
-    vote(model::node_id targe_node, vote_request&& r, rpc::client_opts opts) {
+    vote(vnode targe_node, vote_request&& r, rpc::client_opts opts) {
         return _impl->vote(targe_node, std::move(r), std::move(opts));
     }
 
     ss::future<result<append_entries_reply>> append_entries(
-      model::node_id targe_node,
-      append_entries_request&& r,
-      rpc::client_opts opts) {
+      vnode targe_node, append_entries_request&& r, rpc::client_opts opts) {
         return _impl->append_entries(targe_node, std::move(r), std::move(opts));
     }
 
-    ss::future<result<heartbeat_reply>> heartbeat(
-      model::node_id targe_node, heartbeat_request&& r, rpc::client_opts opts) {
+    ss::future<result<heartbeat_reply>>
+    heartbeat(vnode targe_node, heartbeat_request&& r, rpc::client_opts opts) {
         return _impl->heartbeat(targe_node, std::move(r), std::move(opts));
     }
 
     ss::future<result<install_snapshot_reply>> install_snapshot(
-      model::node_id target_node,
-      install_snapshot_request&& r,
-      rpc::client_opts opts) {
+      vnode target_node, install_snapshot_request&& r, rpc::client_opts opts) {
         return _impl->install_snapshot(
           target_node, std::move(r), std::move(opts));
     }
 
     ss::future<result<timeout_now_reply>> timeout_now(
-      model::node_id target_node,
-      timeout_now_request&& r,
-      rpc::client_opts opts) {
+      vnode target_node, timeout_now_request&& r, rpc::client_opts opts) {
         return _impl->timeout_now(target_node, std::move(r), std::move(opts));
     }
 

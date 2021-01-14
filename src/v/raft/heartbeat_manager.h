@@ -14,6 +14,7 @@
 #include "config/configuration.h"
 #include "model/metadata.h"
 #include "outcome.h"
+#include "raft/configuration.h"
 #include "raft/consensus.h"
 #include "raft/consensus_client_protocol.h"
 #include "raft/types.h"
@@ -96,14 +97,14 @@ public:
     // Heartbeats from all groups for single node
     struct node_heartbeat {
         node_heartbeat(
-          model::node_id t,
+          vnode t,
           heartbeat_request req,
           absl::flat_hash_map<raft::group_id, follower_request_meta> seqs)
           : target(t)
           , request(std::move(req))
           , meta_map(std::move(seqs)) {}
 
-        model::node_id target;
+        vnode target;
         heartbeat_request request;
         // each raft group has its own follower metadata hence we need map to
         // track a sequence per group
@@ -139,7 +140,7 @@ private:
     /// \param groups raft groups managed by \param n
     /// \param result if the node return successful heartbeats
     void process_reply(
-      model::node_id n,
+      vnode n,
       absl::flat_hash_map<raft::group_id, follower_request_meta> groups,
       result<heartbeat_reply> result);
 
