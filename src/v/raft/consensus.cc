@@ -55,7 +55,7 @@ consensus::consensus(
   , _disk_timeout(disk_timeout)
   , _client_protocol(client)
   , _leader_notification(std::move(cb))
-  , _fstats({})
+  , _fstats(nid)
   , _batcher(this, config::shard_local_cfg().raft_replicate_batch_window_size())
   , _event_manager(this)
   , _ctxlog(group, _log.config().ntp())
@@ -109,7 +109,10 @@ void consensus::maybe_step_down() {
                           return clock_type::now();
                       }
 
-                      return _fstats.get(id).last_hbeat_timestamp;
+                      if (auto it = _fstats.find(id); it != _fstats.end()) {
+                          return it->second.last_hbeat_timestamp;
+                      }
+                      return clock_type::now();
                   });
 
                 if (majority_hbeat < _became_leader_at) {
@@ -177,7 +180,13 @@ consensus::success_reply consensus::update_follower_index(
         return success_reply::yes;
     }
 
-    follower_index_metadata& idx = _fstats.get(node);
+    auto it = _fstats.find(node);
+
+    if (it == _fstats.end()) {
+        return success_reply::yes;
+    }
+
+    follower_index_metadata& idx = it->second;
     append_entries_reply& reply = r.value();
     vlog(_ctxlog.trace, "Append entries response: {}", reply);
     if (unlikely(
@@ -1602,8 +1611,10 @@ clock_type::time_point consensus::last_append_timestamp(model::node_id id) {
 }
 
 void consensus::update_node_append_timestamp(model::node_id id) {
-    _fstats.get(id).last_append_timestamp = clock_type::now();
-    update_node_hbeat_timestamp(id);
+    if (auto it = _fstats.find(id); it != _fstats.end()) {
+        it->second.last_append_timestamp = clock_type::now();
+        update_node_hbeat_timestamp(id);
+    }
 }
 
 void consensus::update_node_hbeat_timestamp(model::node_id id) {
@@ -1611,7 +1622,11 @@ void consensus::update_node_hbeat_timestamp(model::node_id id) {
 }
 
 follower_req_seq consensus::next_follower_sequence(model::node_id id) {
-    return _fstats.get(id).last_sent_seq++;
+    if (auto it = _fstats.find(id); it != _fstats.end()) {
+        return it->second.last_sent_seq++;
+    }
+
+    return follower_req_seq{};
 }
 
 absl::flat_hash_map<model::node_id, follower_req_seq>
@@ -1695,7 +1710,11 @@ consensus::do_maybe_update_leader_commit_idx(ss::semaphore_units<> u) {
           if (id == _self) {
               return committed_offset;
           }
-          return _fstats.get(id).match_committed_index();
+          if (auto it = _fstats.find(id); it != _fstats.end()) {
+              return it->second.match_committed_index();
+          }
+
+          return model::offset{};
       });
     if (
       majority_match > _commit_index
@@ -1748,12 +1767,7 @@ consensus::maybe_update_follower_commit_idx(model::offset request_commit_idx) {
 
 void consensus::update_follower_stats(const group_configuration& cfg) {
     vlog(_ctxlog.trace, "Updating follower stats with config {}", cfg);
-    cfg.for_each_broker([this](const model::broker& n) {
-        if (n.id() == _self || _fstats.contains(n.id())) {
-            return;
-        }
-        _fstats.emplace(n.id(), follower_index_metadata(n.id()));
-    });
+    _fstats.update_with_configuration(cfg);
 }
 
 void consensus::trigger_leadership_notification() {
@@ -1952,6 +1966,10 @@ consensus::transfer_leadership(std::optional<model::node_id> target) {
          * then wait on that process to complete before sending the
          * election request.
          */
+        if (!_fstats.contains(target)) {
+            return seastar::make_ready_future<std::error_code>(
+              make_error_code(errc::node_does_not_exists));
+        }
         auto& meta = _fstats.get(target);
         if (
           !meta.is_recovering
@@ -1990,6 +2008,11 @@ consensus::transfer_leadership(std::optional<model::node_id> target) {
             if (_as.abort_requested()) {
                 return seastar::make_ready_future<std::error_code>(
                   make_error_code(errc::not_leader));
+            }
+
+            if (!_fstats.contains(target)) {
+                return seastar::make_ready_future<std::error_code>(
+                  make_error_code(errc::node_does_not_exists));
             }
 
             auto& meta = _fstats.get(target);
@@ -2043,7 +2066,10 @@ void consensus::maybe_update_majority_replicated_index() {
         if (id == _self) {
             return _log.offsets().dirty_offset;
         }
-        return _fstats.get(id).last_dirty_log_index;
+        if (auto it = _fstats.find(id); it != _fstats.end()) {
+            return _fstats.get(id).last_dirty_log_index;
+        }
+        return model::offset{};
     });
 
     _majority_replicated_index = std::max(

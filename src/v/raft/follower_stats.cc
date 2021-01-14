@@ -10,6 +10,22 @@
 #include "raft/follower_stats.h"
 
 namespace raft {
+void follower_stats::update_with_configuration(const group_configuration& cfg) {
+    cfg.for_each_broker([this](const model::broker& n) {
+        if (n.id() == _self || _followers.contains(n.id())) {
+            return;
+        }
+        _followers.emplace(n.id(), follower_index_metadata(n.id()));
+    });
+
+    for (auto it = _followers.cbegin(); it != _followers.cend();) {
+        if (!cfg.contains_broker(it->first)) {
+            _followers.erase(it++);
+        } else {
+            ++it;
+        }
+    }
+}
 std::ostream& operator<<(std::ostream& o, const follower_stats& s) {
     o << "{followers:" << s._followers.size() << ", [";
     for (auto& f : s) {
