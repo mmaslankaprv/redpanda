@@ -12,6 +12,7 @@
 #pragma once
 
 #include "cluster/errc.h"
+#include "config/rjson_serialization.h"
 #include "model/adl_serde.h"
 #include "model/fundamental.h"
 #include "model/metadata.h"
@@ -222,9 +223,13 @@ struct decommissioning_status {
 };
 
 std::ostream& operator<<(std::ostream&, decommissioning_status::state);
-
 } // namespace cluster
 
+namespace json {
+void rjson_serialize(
+  rapidjson::Writer<rapidjson::StringBuffer>& w,
+  const cluster::decommissioning_status& v);
+}
 namespace reflection {
 
 template<>
