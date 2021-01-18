@@ -100,6 +100,8 @@ public:
     ss::future<std::error_code> remove_members(
       std::vector<model::node_id>,
       std::optional<model::revision_id> = std::nullopt);
+
+    ss::future<std::error_code> decomission_nodes(std::vector<model::node_id>);
     // Replace configuration of raft group with given set of nodes
     ss::future<std::error_code> replace_configuration(
       std::vector<model::broker>,
