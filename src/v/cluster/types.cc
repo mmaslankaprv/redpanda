@@ -123,7 +123,41 @@ std::ostream& operator<<(std::ostream& o, const partition_assignment& p_as) {
       p_as.replicas);
     return o;
 }
+
+std::ostream& operator<<(std::ostream& o, node_op_result::state s) {
+    switch (s) {
+    case node_op_result::state::decomission_finished:
+        return o << "decomission_finished";
+    case node_op_result::state::decommission_in_progress:
+        return o << "decommission_in_progress";
+    case node_op_result::state::recommissioned:
+        return o << "recommissioned";
+    case node_op_result::state::error:
+        return o << "error";
+    }
+    __builtin_unreachable();
+}
+
 } // namespace cluster
+namespace json {
+void rjson_serialize(
+  rapidjson::Writer<rapidjson::StringBuffer>& w,
+  const cluster::node_op_result& v) {
+    w.StartObject();
+    w.Key("nodes");
+    w.StartArray();
+    for (auto& p : v.nodes) {
+        w.StartObject();
+        auto k = fmt::format("{}", p.first);
+        w.Key(k.c_str());
+        auto v = fmt::format("{}", p.second);
+        w.String(v.c_str());
+        w.EndObject();
+    }
+    w.EndArray();
+    w.EndObject();
+}
+} // namespace json
 
 namespace reflection {
 void adl<cluster::topic_configuration>::to(

@@ -20,6 +20,7 @@
 #include "raft/service.h"
 #include "redpanda/admin/api-doc/config.json.h"
 #include "redpanda/admin/api-doc/kafka.json.h"
+#include "redpanda/admin/api-doc/node.json.h"
 #include "redpanda/admin/api-doc/raft.json.h"
 #include "rpc/simple_protocol.h"
 #include "storage/chunk_cache.h"
@@ -32,6 +33,7 @@
 
 #include <seastar/core/metrics.hh>
 #include <seastar/core/prometheus.hh>
+#include <seastar/core/sstring.hh>
 #include <seastar/core/thread.hh>
 #include <seastar/http/api_docs.hh>
 #include <seastar/http/exception.hh>
@@ -39,6 +41,8 @@
 #include <seastar/json/json_elements.hh>
 #include <seastar/util/defer.hh>
 
+#include <boost/lexical_cast.hpp>
+#include <boost/tokenizer.hpp>
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
 #include <sys/utsname.h>
@@ -259,6 +263,7 @@ void application::configure_admin_server() {
               rb->register_api_file(server._routes, "raft");
               rb->register_function(server._routes, insert_comma);
               rb->register_api_file(server._routes, "kafka");
+              rb->register_api_file(server._routes, "nodes");
               ss::httpd::config_json::get_config.set(
                 server._routes, []([[maybe_unused]] ss::const_req req) {
                     rapidjson::StringBuffer buf;
@@ -268,6 +273,7 @@ void application::configure_admin_server() {
                 });
               admin_register_raft_routes(server);
               admin_register_kafka_routes(server);
+              admin_register_node_routes(server);
           })
           .get();
     }
@@ -653,6 +659,47 @@ void application::admin_register_raft_routes(ss::http_server& server) {
                       return ss::json::json_return_type(ss::json::json_void());
                   });
             });
+      });
+}
+
+std::vector<model::node_id> parse_node_ids(const ss::sstring& params) {
+    std::vector<model::node_id> ids;
+    std::string token;
+    std::istringstream tokenStream(params);
+    while (std::getline(tokenStream, token, ',')) {
+        ids.emplace_back(boost::lexical_cast<int32_t>(token));
+    }
+    return ids;
+}
+
+void application::admin_register_node_routes(ss::http_server& srv) {
+    ss::httpd::node_json::decommission_nodes.set(
+      srv._routes, [this](std::unique_ptr<ss::httpd::request> req) {
+          auto ids_str = req->query_parameters.find("node_id")->second;
+          try {
+              auto ids = parse_node_ids(ids_str);
+              vlog(_log.debug, "processing decommission request for {}", ids);
+              return controller->get_members_manager()
+                .invoke_on(
+                  cluster::members_manager::shard,
+                  [ids = std::move(ids)](cluster::members_manager& m_mgr) {
+                      return m_mgr.decommission_nodes(std::move(ids));
+                  })
+                .then([](result<cluster::node_op_result> res) {
+                    if (!res) {
+                        throw ss::httpd::server_error_exception(fmt::format(
+                          "Nodes decomissioning failed: {}",
+                          res.error().message()));
+                    }
+                    rapidjson::StringBuffer buf;
+                    rapidjson::Writer<rapidjson::StringBuffer> writer(buf);
+                    json::rjson_serialize(writer, res.value());
+                    return ss::json::json_return_type(buf.GetString());
+                });
+          } catch (const boost::bad_lexical_cast& e) {
+              throw ss::httpd::bad_param_exception(
+                fmt::format("Invalid node ids {}", ids_str));
+          }
       });
 }
 
