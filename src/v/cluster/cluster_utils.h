@@ -100,4 +100,10 @@ void log_certificate_reload_event(
   const std::unordered_set<ss::sstring>& updated,
   const std::exception_ptr& eptr);
 
+/**
+ * checks if current node/shard is part of the partition replica set replica set
+ */
+bool has_local_replicas(
+  model::node_id, const std::vector<model::broker_shard>&);
+
 } // namespace cluster
