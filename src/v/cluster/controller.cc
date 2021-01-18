@@ -62,6 +62,8 @@ ss::future<> controller::start() {
             std::ref(_connections),
             std::ref(_partition_allocator),
             std::ref(_storage),
+            std::ref(_tp_frontend),
+            std::ref(_tp_state),
             std::ref(_as));
       })
       .then([this] {
