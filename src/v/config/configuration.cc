@@ -435,6 +435,12 @@ configuration::configuration()
       "touching the log until the batch is exhausted.",
       required::no,
       1000)
+  , decomission_monitor_retry_ms(
+      *this,
+      "decomission_monitor_retry_ms",
+      "Time between node decomissioning retries ",
+      required::no,
+      5s)
   , _advertised_kafka_api(
       *this,
       "advertised_kafka_api",
