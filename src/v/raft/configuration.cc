@@ -11,6 +11,7 @@
 
 #include "model/metadata.h"
 #include "raft/consensus_utils.h"
+#include "reflection/adl.h"
 
 #include <absl/container/flat_hash_set.h>
 #include <bits/stdint-uintn.h>
@@ -68,10 +69,20 @@ group_configuration::group_configuration(
   group_nodes current,
   model::revision_id revision,
   std::optional<group_nodes> old)
+  : group_configuration(
+    std::move(brokers), std::move(current), revision, std::move(old), {}) {}
+
+group_configuration::group_configuration(
+  std::vector<model::broker> brokers,
+  group_nodes current,
+  model::revision_id revision,
+  std::optional<group_nodes> old,
+  std::vector<model::node_id> decommissioned)
   : _brokers(std::move(brokers))
   , _current(std::move(current))
   , _old(std::move(old))
-  , _revision(revision) {}
+  , _revision(revision)
+  , _decommissioned(std::move(decommissioned)) {}
 
 std::optional<model::broker>
 group_configuration::find_broker(model::node_id id) const {
@@ -307,6 +318,13 @@ void group_configuration::discard_old_config() {
           return physical_node_ids.contains(b.id());
       });
     // we are only interested in current brokers
+    for (auto& b : boost::make_iterator_range(it, std::end(_brokers))) {
+        auto it = find(
+          _decommissioned.cbegin(), _decommissioned.cend(), b.id());
+        if (it != _decommissioned.cend()) {
+            _decommissioned.erase(it);
+        }
+    }
     _brokers.erase(it, std::end(_brokers));
     _old.reset();
 }
@@ -325,14 +343,38 @@ void group_configuration::update(model::broker broker) {
     *it = std::move(broker);
 }
 
+void group_configuration::decommission(model::node_id id) {
+    if (!contains_broker(id)) {
+        throw std::invalid_argument(fmt::format(
+          "broker {} does not exists in current configuration {}", id, *this));
+    }
+    // do nothing if already decommissioned
+    if (is_decommissioned(id)) {
+        return;
+    }
+
+    _decommissioned.push_back(id);
+}
+
+bool group_configuration::is_decommissioned(model::node_id id) const {
+    auto it = find(_decommissioned.cbegin(), _decommissioned.cend(), id);
+    return it != _decommissioned.cend();
+}
+
+const std::vector<model::node_id>& group_configuration::decommissioned() const {
+    return _decommissioned;
+}
+
 std::ostream& operator<<(std::ostream& o, const group_configuration& c) {
     fmt::print(
       o,
-      "{{current: {}, old:{}, revision: {}, brokers: {}}}",
+      "{{current: {}, old:{}, revision: {}, decommissioned: {}, brokers: {}}}",
       c._current,
       c._old,
       c._revision,
+      c._decommissioned,
       c._brokers);
+
     return o;
 }
 
@@ -366,32 +408,38 @@ void adl<raft::group_configuration>::to(
       cfg.brokers(),
       cfg.current_config(),
       cfg.old_config(),
-      cfg.revision_id());
+      cfg.revision_id(),
+      cfg.decommissioned());
 }
 
 raft::group_configuration
 adl<raft::group_configuration>::from(iobuf_parser& p) {
     auto version = adl<uint8_t>{}.from(p);
-    // currently we support only version 1
-    vassert(
-      version <= raft::group_configuration::current_version,
-      "Version {} is not supported. We only support versions up to {}",
-      version,
-      raft::group_configuration::current_version);
+    // currently we support versions {0,1,2}
 
     auto brokers = adl<std::vector<model::broker>>{}.from(p);
     auto current = adl<raft::group_nodes>{}.from(p);
     auto old = adl<std::optional<raft::group_nodes>>{}.from(p);
-    if (version == 0) {
-        return raft::group_configuration(
-          std::move(brokers),
-          std::move(current),
-          model::revision_id(0),
-          std::move(old));
+
+    raft::group_configuration res(
+      std::move(brokers),
+      std::move(current),
+      model::revision_id(0),
+      std::move(old));
+
+    if (version > 0) {
+        auto revision = adl<model::revision_id>{}.from(p);
+        res.set_revision(revision);
     }
-    auto revision = adl<model::revision_id>{}.from(p);
-    return raft::group_configuration(
-      std::move(brokers), std::move(current), revision, std::move(old));
+
+    if (version > 1) {
+        auto decommissioned = adl<std::vector<model::node_id>>{}.from(p);
+        for (auto nid : decommissioned) {
+            res.decommission(nid);
+        }
+    }
+
+    return res;
 }
 
 void adl<raft::vnode>::to(iobuf& buf, raft::vnode id) {

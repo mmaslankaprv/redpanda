@@ -25,6 +25,7 @@ std::vector<model::broker> random_brokers() {
 }
 
 raft::group_configuration random_configuration() {
+    auto version = random_generators::get_int(0, 2);
     auto brokers = random_brokers();
     raft::group_nodes current;
     for (auto& b : brokers) {
@@ -34,6 +35,13 @@ raft::group_configuration random_configuration() {
         } else {
             current.learners.emplace_back(
               b.id(), model::revision_id(random_generators::get_int(100)));
+        }
+    }
+
+    std::vector<model::node_id> decommissioned;
+    for (auto& b : brokers) {
+        if (random_generators::get_int(0, 100) > 50) {
+            decommissioned.push_back(b.id());
         }
     }
 
@@ -55,7 +63,11 @@ raft::group_configuration random_configuration() {
           std::move(old));
     } else {
         return raft::group_configuration(
-          std::move(brokers), std::move(current), model::revision_id(0));
+          std::move(brokers),
+          std::move(current),
+          model::revision_id(0),
+          std::nullopt,
+          std::move(decommissioned));
     }
 }
 
