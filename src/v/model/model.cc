@@ -361,4 +361,11 @@ std::istream& operator>>(std::istream& i, cleanup_policy_bitflags& cp) {
     return i;
 }
 
+bool operator==(const broker_shard& a, const broker_shard& b) {
+    return a.shard == b.shard && a.node_id == b.node_id;
+}
+bool operator!=(const broker_shard& a, const broker_shard& b) {
+    return !(a == b);
+}
+
 } // namespace model
