@@ -33,6 +33,11 @@ namespace cluster {
 ///
 class topic_table {
 public:
+    using underlying_t = absl::flat_hash_map<
+      model::topic_namespace,
+      topic_configuration_assignment,
+      model::topic_namespace_hash,
+      model::topic_namespace_eq>;
     // delta propagated to backend
     struct delta {
         enum class op_type { add, del, update, update_finished };
@@ -119,6 +124,8 @@ public:
     std::optional<partition_assignment>
     get_partition_assignment(const model::ntp&) const;
 
+    const underlying_t& topics_map() const { return _topics; }
+
 private:
     struct waiter {
         explicit waiter(uint64_t id)
@@ -135,12 +142,7 @@ private:
     std::vector<std::invoke_result_t<Func, topic_configuration_assignment>>
     transform_topics(Func&&) const;
 
-    absl::flat_hash_map<
-      model::topic_namespace,
-      topic_configuration_assignment,
-      model::topic_namespace_hash,
-      model::topic_namespace_eq>
-      _topics;
+    underlying_t _topics;
 
     absl::flat_hash_set<model::ntp> _update_in_progress;
 
