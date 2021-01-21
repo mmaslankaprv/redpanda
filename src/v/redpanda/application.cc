@@ -457,7 +457,7 @@ void application::wire_up_services() {
                     : nullptr;
     syschecks::systemd_message("Starting internal RPC {}", rpc_cfg);
     construct_service(_rpc, rpc_cfg).get();
-
+    _deferred.emplace_back([this] { controller->shutdown_input().get(); });
     // coproc rpc
     if (coproc_enabled()) {
         auto coproc_script_manager_server_addr
