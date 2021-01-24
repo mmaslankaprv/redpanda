@@ -10,4 +10,4 @@
 
 set -e
 
-rpk api topic create topic1 -r 3 -p 1
+rpk topic create topic1 -r 3 -p 1
