@@ -15,3 +15,4 @@ mkdir -p /mnt/vectorized/back
 rm -rf /mnt/vectorized/redpanda/* || true
 rm -rf /mnt/vectorized/back/* || true
 rm -rf /home/admin/redpanda.log || true
+rm -rf /var/lib/redpanda/* || true
