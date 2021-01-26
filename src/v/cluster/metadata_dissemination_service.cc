@@ -309,6 +309,7 @@ ss::future<> metadata_dissemination_service::dispatch_one_update(
         _self.id(),
         ss::this_shard_id(),
         target_id,
+        model::no_timeout,
         [this, &meta, target_id](
           metadata_dissemination_rpc_client_protocol proto) mutable {
             vlog(

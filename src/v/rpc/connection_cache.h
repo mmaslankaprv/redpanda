@@ -12,6 +12,7 @@
 #pragma once
 #include "hashing/jump_consistent_hash.h"
 #include "model/metadata.h"
+#include "model/timeout_clock.h"
 #include "outcome.h"
 #include "outcome_future_utils.h"
 #include "rpc/backoff_policy.h"
@@ -67,22 +68,24 @@ public:
         model::node_id self,
         ss::shard_id src_shard,
         model::node_id node_id,
+        rpc::clock_type::time_point connection_timeout,
         Func&& f) {
         using ret_t = result_wrap_t<std::invoke_result_t<Func, Protocol>>;
         auto shard = rpc::connection_cache::shard_for(self, src_shard, node_id);
 
         return container().invoke_on(
           shard,
-          [node_id,
-           f = std::forward<Func>(f)](rpc::connection_cache& cache) mutable {
+          [node_id, f = std::forward<Func>(f), connection_timeout](
+            rpc::connection_cache& cache) mutable {
               if (!cache.contains(node_id)) {
                   // No client available
                   return ss::futurize<ret_t>::convert(
                     rpc::make_error_code(errc::missing_node_rpc_client));
               }
-              return cache.get(node_id)->get_connected().then(
-                [f = std::forward<Func>(f)](
-                  result<rpc::transport*> transport) mutable {
+              return cache.get(node_id)
+                ->get_connected(connection_timeout)
+                .then([f = std::forward<Func>(f)](
+                        result<rpc::transport*> transport) mutable {
                     if (!transport) {
                         // Connection error
                         return ss::futurize<ret_t>::convert(transport.error());

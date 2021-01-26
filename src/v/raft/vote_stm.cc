@@ -44,7 +44,7 @@ vote_stm::~vote_stm() {
       "Must call vote_stm::wait()");
 }
 ss::future<result<vote_reply>> vote_stm::do_dispatch_one(vnode n) {
-    vlog(_ctxlog.trace, "Sending vote request to {}", n);
+    vlog(_ctxlog.info, "Sending vote request to {}", n);
     auto tout = clock_type::now() + _ptr->_jit.base_duration();
 
     auto r = _req;
@@ -231,7 +231,7 @@ ss::future<> vote_stm::update_vote_state(ss::semaphore_units<> u) {
             acks.emplace_back(id);
         }
     }
-    vlog(_ctxlog.trace, "vote acks in term {} from: {}", _ptr->term(), acks);
+    vlog(_ctxlog.info, "vote acks in term {} from: {}", _ptr->term(), acks);
     // section vote:5.2.2
     _ptr->_vstate = consensus::vote_state::leader;
     _ptr->_leader_id = _ptr->self();
@@ -268,7 +268,7 @@ ss::future<> vote_stm::self_vote() {
     reply.log_ok = true;
     reply.granted = true;
 
-    vlog(_ctxlog.trace, "Voting for self in term {}", _req.term);
+    vlog(_ctxlog.info, "Voting for self in term {}", _req.term);
     _ptr->_voted_for = _ptr->_self;
     return _ptr->write_voted_for({_ptr->_self, model::term_id(_req.term)})
       .then([this, reply] {

@@ -16,6 +16,7 @@
 #include "cluster/types.h"
 #include "config/configuration.h"
 #include "config/tls_config.h"
+#include "model/timeout_clock.h"
 #include "outcome_future_utils.h"
 #include "rpc/connection_cache.h"
 
@@ -80,7 +81,11 @@ auto with_client(
              self, cache, id, std::move(addr), std::move(tls_config))
       .then([id, self, &cache, f = std::forward<Func>(f)]() mutable {
           return cache.local().with_node_client<Proto, Func>(
-            self, ss::this_shard_id(), id, std::forward<Func>(f));
+            self,
+            ss::this_shard_id(),
+            id,
+            model::no_timeout,
+            std::forward<Func>(f));
       });
 }
 
@@ -138,7 +143,7 @@ auto do_with_client_one_shot(
             });
       })
       .then([addr, f = std::forward<Func>(f)](transport_ptr transport) mutable {
-          return transport->connect()
+          return transport->connect(model::no_timeout)
             .then([transport, f = std::forward<Func>(f)]() mutable {
                 return ss::futurize_invoke(
                   std::forward<Func>(f), Proto(*transport));

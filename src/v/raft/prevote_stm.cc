@@ -36,17 +36,19 @@ prevote_stm::~prevote_stm() {
 
 ss::future<result<vote_reply>> prevote_stm::do_dispatch_prevote(vnode n) {
     auto tout_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-      _prevote_timeout.time_since_epoch());
+      _ptr->_jit.base_duration());
+
     vlog(
-      _ctxlog.trace,
+      _ctxlog.info,
       "Sending prevote request to {} from {} with tout: {}",
       n,
       _ptr->_self,
       tout_ms);
     auto r = _req;
     r.target_node_id = n;
+    auto tout = clock_type::now() + tout_ms;
     return _ptr->_client_protocol
-      .vote(n.id(), std::move(r), rpc::client_opts(_prevote_timeout))
+      .vote(n.id(), std::move(r), rpc::client_opts(tout))
       .then([this](result<vote_reply> reply) {
           return _ptr->validate_reply_target_node("prevote", std::move(reply));
       });
@@ -58,7 +60,7 @@ prevote_stm::process_reply(vnode n, ss::future<result<vote_reply>> f) {
 
     try {
         if (_prevote_timeout < clock_type::now()) {
-            vlog(_ctxlog.trace, "prevote ack from {} timed out", n);
+            vlog(_ctxlog.info, "prevote ack from {} timed out", n);
             voter_reply->second._is_failed = true;
             voter_reply->second._is_pending = false;
         } else {
@@ -67,14 +69,14 @@ prevote_stm::process_reply(vnode n, ss::future<result<vote_reply>> f) {
                 auto v = r.value();
                 if (v.log_ok) {
                     vlog(
-                      _ctxlog.trace,
+                      _ctxlog.info,
                       "prevote ack: node {} caught up with a candidate",
                       n);
                     voter_reply->second._is_ok = true;
                     voter_reply->second._is_pending = false;
                 } else {
                     vlog(
-                      _ctxlog.trace,
+                      _ctxlog.info,
                       "prevote ack: node {} is ahead of a candidate",
                       n);
                     voter_reply->second._is_failed = true;
@@ -82,7 +84,7 @@ prevote_stm::process_reply(vnode n, ss::future<result<vote_reply>> f) {
                 }
             } else {
                 vlog(
-                  _ctxlog.trace,
+                  _ctxlog.info,
                   "prevote ack from {} doesn't have value, error: {}",
                   n,
                   r.error().message());
@@ -92,7 +94,7 @@ prevote_stm::process_reply(vnode n, ss::future<result<vote_reply>> f) {
         }
     } catch (...) {
         vlog(
-          _ctxlog.trace,
+          _ctxlog.info,
           "error on sending prevote to {} exception: {}",
           n,
           std::current_exception());

@@ -574,6 +574,7 @@ ss::future<bool> consensus::dispatch_prevote(bool leadership_transfer) {
 void consensus::dispatch_vote(bool leadership_transfer) {
     // 5.2.1.4 - prepare next timeout
     if (should_skip_vote(leadership_transfer)) {
+        vlog(_ctxlog.info, "skipping vote");
         arm_vote_timeout();
         return;
     }
@@ -585,6 +586,7 @@ void consensus::dispatch_vote(bool leadership_transfer) {
 
     // skip sending vote request if current node is not a voter
     if (!_configuration_manager.get_latest().is_voter(_self)) {
+        vlog(_ctxlog.info, "not voter...");
         arm_vote_timeout();
         return;
     }
@@ -593,7 +595,7 @@ void consensus::dispatch_vote(bool leadership_transfer) {
     // account when we transfer leadership
     if (current_priority_to_low && !leadership_transfer) {
         vlog(
-          _ctxlog.trace,
+          _ctxlog.info,
           "current node priority {} is to low, target priority {}",
           self_priority,
           _target_priority);
@@ -605,6 +607,7 @@ void consensus::dispatch_vote(bool leadership_transfer) {
         return dispatch_prevote(leadership_transfer)
           .then([this, leadership_transfer](bool ready) mutable {
               if (!ready) {
+                  vlog(_ctxlog.info, "prevote failed");
                   return ss::make_ready_future<>();
               }
               auto vstm = std::make_unique<vote_stm>(this);

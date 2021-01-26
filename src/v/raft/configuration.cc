@@ -415,7 +415,7 @@ void adl<raft::group_configuration>::to(
       cfg.revision_id());
 }
 
-std::vector<raft::vnode> make_vnodes(const std::vector<model::node_id> ids) {
+std::vector<raft::vnode> make_vnodes(const std::vector<model::node_id>& ids) {
     std::vector<raft::vnode> ret;
     ret.reserve(ids.size());
     std::transform(
