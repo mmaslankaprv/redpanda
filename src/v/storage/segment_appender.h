@@ -55,7 +55,7 @@ public:
         size_t falloc_step{fallocation_step};
     };
 
-    segment_appender(ss::file f, options opts);
+    segment_appender(ss::file f, options opts, ss::sstring name);
     ~segment_appender() noexcept;
     segment_appender(segment_appender&&) noexcept;
     // semaphores cannot be assigned
@@ -100,9 +100,9 @@ private:
     size_t next_committed_offset() const {
         return _committed_offset + (_head ? _head->bytes_pending() : 0);
     }
-
     ss::file _out;
     options _opts;
+    ss::sstring _name;
     bool _closed{false};
     size_t _committed_offset{0};
     size_t _fallocation_offset{0};

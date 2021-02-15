@@ -35,7 +35,7 @@ spill_key_index::spill_key_index(
   ss::io_priority_class p,
   size_t max_memory)
   : compacted_index_writer::impl(std::move(name))
-  , _appender(std::move(index_file), segment_appender::options(p, 1))
+  , _appender(std::move(index_file), segment_appender::options(p, 1), name)
   , _max_mem(max_memory) {}
 
 spill_key_index::~spill_key_index() {

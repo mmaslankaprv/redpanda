@@ -38,7 +38,7 @@ set(srcs
 rp_test(
   UNIT_TEST
   BINARY_NAME test_raft
-  SOURCES ${srcs}
+  SOURCES append_entries_test.cc
   LIBRARIES v::seastar_testing_main v::raft v::storage_test_utils
   LABELS raft
 )

@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iostream>
 #include <ostream>
 
 namespace storage {
@@ -89,7 +90,10 @@ public:
         // allow chunk reuse
         std::memset(_buf.get(), 0, chunk_size);
     }
-    void flush() { _flushed_pos = _pos; }
+    void flush() {
+        fmt::print(std::cout, "DBG: chunk flush @: {}\n", _pos);
+        _flushed_pos = _pos;
+    }
     char* get_current() { return _buf.get() + _pos; }
     void set_position(size_t p) { _flushed_pos = _pos = p; }
 

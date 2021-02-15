@@ -20,7 +20,9 @@
 #include <seastar/core/future-util.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/semaphore.hh>
+#include <seastar/core/sstring.hh>
 
+#include <fmt/core.h>
 #include <fmt/format.h>
 
 #include <ostream>
@@ -33,12 +35,14 @@ size_missmatch_error(const char* ctx, size_t expected, size_t got) {
       "{}. Size missmatch. Expected:{}, Got:{}", ctx, expected, got));
 }
 
-segment_appender::segment_appender(ss::file f, options opts)
+segment_appender::segment_appender(ss::file f, options opts, ss::sstring fname)
   : _out(std::move(f))
   , _opts(opts)
+  , _name(fname)
   , _concurrent_flushes(ss::semaphore::max_counter())
   , _inactive_timer([this] { handle_inactive_timer(); }) {
     const auto alignment = _out.disk_write_dma_alignment();
+    std::cout << "appender: " << *this << std::endl;
     vassert(
       internal::chunk_cache::alignment % alignment == 0,
       "unexpected alignment {} % {} != 0",
@@ -60,6 +64,7 @@ segment_appender::~segment_appender() noexcept {
 segment_appender::segment_appender(segment_appender&& o) noexcept
   : _out(std::move(o._out))
   , _opts(o._opts)
+  , _name(std::move(o._name))
   , _closed(o._closed)
   , _committed_offset(o._committed_offset)
   , _fallocation_offset(o._fallocation_offset)
@@ -100,7 +105,7 @@ ss::future<> segment_appender::append(const char* buf, const size_t n) {
 
 ss::future<> segment_appender::do_append(const char* buf, const size_t n) {
     vassert(!_closed, "append() on closed segment: {}", *this);
-
+    fmt::print(std::cout, "DBG: append {} bytes to {}\n", n, _name);
     /*
      * if at any point prior to this the inactive timer fired to flush/reclaim
      * the active chunk, then insert a barrier. this barrier is necessary
@@ -200,6 +205,7 @@ void segment_appender::handle_inactive_timer() {
 }
 
 ss::future<> segment_appender::hydrate_last_half_page() {
+    fmt::print(std::cout, "DBG: hydrate last half page: {}", _name);
     vassert(_head, "hydrate last half page expects active chunk");
     vassert(
       _head->flushed_pos() == 0,
@@ -260,6 +266,7 @@ ss::future<> segment_appender::do_truncation(size_t n) {
 }
 
 ss::future<> segment_appender::truncate(size_t n) {
+    fmt::print(std::cout, "DBG:  truncate at {} \n", n);
     vassert(
       n <= file_byte_offset(),
       "Cannot ask to truncate at:{} which is more bytes than we have:{} - {}",
@@ -287,6 +294,7 @@ ss::future<> segment_appender::truncate(size_t n) {
 
 ss::future<> segment_appender::close() {
     vassert(!_closed, "close() on closed segment: {}", *this);
+    std::cout << "closing: " << _name << std::endl;
     _closed = true;
     return flush()
       .then([this] { return do_truncation(_committed_offset); })
@@ -389,8 +397,15 @@ void segment_appender::dispatch_background_head_write() {
       _concurrent_flushes,
       1,
       [h, w, this, start_offset, expected, src] {
+          fmt::print(
+            std::cout, "DBG: write at: {} bytes: {}\n", start_offset, expected);
           return _out.dma_write(start_offset, src, expected, _opts.priority)
             .then([this, h, w, expected](size_t got) {
+                fmt::print(
+                  std::cout,
+                  "DBG: write finished: ex: {}, got: {}\n",
+                  expected,
+                  got);
                 if (h->is_full()) {
                     h->reset();
                 }
@@ -431,7 +446,8 @@ std::ostream& operator<<(std::ostream& o, const segment_appender& a) {
              << ", closed:" << a._closed
              << ", fallocation_offset:" << a._fallocation_offset
              << ", committed_offset:" << a._committed_offset
-             << ", bytes_flush_pending:" << a._bytes_flush_pending << "}";
+             << ", bytes_flush_pending:" << a._bytes_flush_pending
+             << ", name: " << a._name << "}";
 }
 
 } // namespace storage

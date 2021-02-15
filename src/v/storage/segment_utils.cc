@@ -129,15 +129,19 @@ ss::future<segment_appender_ptr> make_segment_appender(
   debug_sanitize_files debug,
   size_t number_of_chunks,
   ss::io_priority_class iopc) {
+    auto name = path.string();
+    std::cout << "make appender " << path << std::endl;
     return internal::make_writer_handle(path, debug)
-      .then([number_of_chunks, iopc, path](ss::file writer) {
+      .then([number_of_chunks, iopc, path, name](ss::file writer) {
           try {
               // NOTE: This try-catch is needed to not uncover the real
               // exception during an OOM condition, since the appender allocates
               // 1MB of memory aligned buffers
               return ss::make_ready_future<segment_appender_ptr>(
                 std::make_unique<segment_appender>(
-                  writer, segment_appender::options(iopc, number_of_chunks)));
+                  writer,
+                  segment_appender::options(iopc, number_of_chunks),
+                  name));
           } catch (...) {
               auto e = std::current_exception();
               vlog(stlog.error, "could not allocate appender: {}", e);
