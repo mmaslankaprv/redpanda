@@ -24,6 +24,8 @@
 #include <absl/container/node_hash_map.h>
 #include <absl/hash/hash.h>
 
+#include <unordered_map>
+
 namespace storage::internal {
 using namespace storage; // NOLINT
 class spill_key_index final : public compacted_index_writer::impl {
@@ -36,7 +38,7 @@ public:
     static constexpr size_t max_key_size = compacted_index::max_entry_size
                                            - (2 * vint::max_length);
     using underlying_t
-      = absl::node_hash_map<bytes, value_type, bytes_type_hash, bytes_type_eq>;
+      = std::unordered_map<bytes, value_type, bytes_type_hash, bytes_type_eq>;
 
     spill_key_index(
       ss::sstring filename,
@@ -67,9 +69,8 @@ private:
      *    idx_mem_usage() + _keys_mem_usage
      */
     size_t idx_mem_usage() {
-        using debug = absl::container_internal::hashtable_debug_internal::
-          HashtableDebugAccess<underlying_t>;
-        return debug::AllocatedByteSize(_midx);
+        return _midx.size() * sizeof(value_type)
+               + (sizeof(size_t) + sizeof(void*)) * _midx.bucket_count();
     }
     ss::future<> drain_all_keys();
     ss::future<> add_key(bytes b, value_type);

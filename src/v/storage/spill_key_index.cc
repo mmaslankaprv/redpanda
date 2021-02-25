@@ -47,7 +47,8 @@ spill_key_index::~spill_key_index() {
 
 ss::future<>
 spill_key_index::index(bytes_view v, model::offset base_offset, int32_t delta) {
-    if (auto it = _midx.find(v); it != _midx.end()) {
+    bytes key_bytes(v);
+    if (auto it = _midx.find(key_bytes); it != _midx.end()) {
         auto& pair = it->second;
         if (base_offset > pair.base_offset) {
             pair.base_offset = base_offset;
@@ -56,7 +57,7 @@ spill_key_index::index(bytes_view v, model::offset base_offset, int32_t delta) {
         return ss::now();
     }
     // not found
-    return add_key(bytes(v), value_type{base_offset, delta});
+    return add_key(std::move(key_bytes), value_type{base_offset, delta});
 }
 
 ss::future<> spill_key_index::add_key(bytes b, value_type v) {
