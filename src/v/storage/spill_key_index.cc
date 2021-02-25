@@ -67,13 +67,17 @@ ss::future<> spill_key_index::add_key(bytes b, value_type v) {
     // between 0.874 and 0.86 to prevent if from regrowing. We evict
     // multiple keys at a time to optimize the number of rehashes
 
-    auto const expected_size = 2 * idx_mem_usage() + _keys_mem_usage + b.size();
+    auto const expected_keys_size = _keys_mem_usage + b.size();
+    auto const expected_size = 2 * idx_mem_usage() + expected_keys_size;
 
-    if (expected_size >= _max_mem && _midx.load_factor() > 0.874) {
+    if (
+      (expected_size >= _max_mem && _midx.load_factor() > 0.874)
+      || expected_keys_size >= _max_mem) {
         f = ss::do_until(
               [this] {
                   // stop condition
-                  return _midx.empty() || _midx.load_factor() <= 0.86;
+                  return (_midx.empty() || _midx.load_factor() <= 0.86)
+                         && _keys_mem_usage < _max_mem;
               },
               [this] {
                   // evict random entry
