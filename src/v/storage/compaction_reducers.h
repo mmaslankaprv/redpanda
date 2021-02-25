@@ -25,6 +25,8 @@
 #include <fmt/core.h>
 #include <roaring/roaring.hh>
 
+#include <unordered_map>
+
 namespace storage::internal {
 
 struct compaction_reducer {};
@@ -40,7 +42,7 @@ public:
         uint32_t natural_index;
     };
     using underlying_t
-      = absl::node_hash_map<bytes, value_type, bytes_type_hash, bytes_type_eq>;
+      = std::unordered_map<bytes, value_type, bytes_type_hash, bytes_type_eq>;
 
     explicit compaction_key_reducer(size_t max_mem = default_max_memory_usage)
       : _max_mem(max_mem) {}
@@ -50,9 +52,8 @@ public:
 
 private:
     size_t idx_mem_usage() {
-        using debug = absl::container_internal::hashtable_debug_internal::
-          HashtableDebugAccess<underlying_t>;
-        return debug::AllocatedByteSize(_indices);
+        return _indices.size() * sizeof(value_type)
+               + _indices.bucket_count() * (sizeof(size_t) + sizeof(void*));
     }
     Roaring _inverted;
     underlying_t _indices;
