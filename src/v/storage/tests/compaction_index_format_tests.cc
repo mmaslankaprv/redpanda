@@ -225,12 +225,11 @@ FIXTURE_TEST(key_reducer_max_mem, compacted_topic_fixture) {
 
     rdr.verify_integrity().get();
     rdr.reset();
-    auto small_mem_bitmap = rdr
-                              .consume(
-                                storage::internal::compaction_key_reducer(
-                                  1_KiB + 16),
-                                model::no_timeout)
-                              .get0();
+    auto small_mem_bitmap
+      = rdr
+          .consume(
+            storage::internal::compaction_key_reducer(1_KiB), model::no_timeout)
+          .get0();
 
     /*
       There are 2 keys exactly.

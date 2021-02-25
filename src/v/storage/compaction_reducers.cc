@@ -43,13 +43,16 @@ compaction_key_reducer::operator()(compacted_index::entry&& e) {
         }
     } else {
         // not found - insert
-        auto const expected_size = 2 * idx_mem_usage() + _keys_mem_usage
-                                   + e.key.size();
-        if (expected_size >= _max_mem && _indices.load_factor() >= 0.874) {
+        auto const expected_keys_size = _keys_mem_usage + e.key.size();
+        auto const expected_size = 2 * idx_mem_usage() + expected_keys_size;
+        if (
+          (expected_size >= _max_mem && _indices.load_factor() >= 0.874)
+          || expected_keys_size >= _max_mem) {
             // remove multiple entries at a time to optimize number of rehashes
             f = ss::do_until(
                   [this] {
-                      return _indices.load_factor() < 0.8 || _indices.empty();
+                      return (_indices.load_factor() < 0.8 || _indices.empty())
+                             && _keys_mem_usage < _max_mem;
                   },
                   [this] {
                       auto n = random_generators::get_int<size_t>(
