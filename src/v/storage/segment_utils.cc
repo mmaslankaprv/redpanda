@@ -526,7 +526,7 @@ ss::future<ss::lw_shared_ptr<segment>> make_concatenated_segment(
               "Aborting compaction of closed segment: {}", *segment));
         }
     }
-
+    co_await write_concatenated_compacted_index(path, segments, cfg);
     // concatenation process
     auto writer = co_await make_writer_handle(path, cfg.sanitize);
     auto output = co_await ss::make_file_output_stream(std::move(writer));
@@ -576,6 +576,49 @@ ss::future<ss::lw_shared_ptr<segment>> make_concatenated_segment(
       std::nullopt,
       std::nullopt,
       std::nullopt);
+}
+
+ss::future<> write_concatenated_compacted_index(
+  std::filesystem::path target_path,
+  std::vector<ss::lw_shared_ptr<segment>> segments,
+  compaction_config cfg) {
+    if (segments.empty()) {
+        co_return;
+    }
+    std::vector<compacted_index_reader> readers;
+    readers.reserve(segments.size());
+
+    for (auto& s : segments) {
+        const auto path = compacted_index_path(s->reader().filename().c_str());
+        auto reader_fd = co_await make_reader_handle(path, cfg.sanitize);
+        readers.push_back(make_file_backed_compacted_reader(
+          path.string(), reader_fd, cfg.iopc, 64_KiB));
+    }
+
+    vlog(stlog.debug, "concatenating {} indicies", readers.size());
+    auto fd = co_await storage::internal::make_writer_handle(
+      target_path, cfg.sanitize);
+    target_path.replace_extension(".compaction_index");
+    auto writer = co_await make_compacted_index_writer(
+      target_path, cfg.sanitize, cfg.iopc);
+
+    index_copy_reducer reducer(writer);
+
+    for (auto& rdr : readers) {
+        vlog(stlog.trace, "concatenating index: {}", rdr.filename());
+        try {
+            co_await rdr.verify_integrity();
+            co_await rdr.consume(reducer, model::no_timeout);
+        } catch (...) {
+            vlog(
+              stlog.info,
+              "compacted index {} is corrupted, skipping concatenation",
+              rdr.filename());
+            break;
+        }
+    }
+    co_await writer.close();
+    co_return;
 }
 
 ss::future<std::vector<ss::rwlock::holder>> transfer_segment(
