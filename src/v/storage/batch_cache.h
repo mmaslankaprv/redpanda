@@ -16,8 +16,10 @@
 #include "vassert.h"
 
 #include <seastar/core/circular_buffer.hh>
+#include <seastar/core/condition-variable.hh>
 #include <seastar/core/lowres_clock.hh>
 #include <seastar/core/memory.hh>
+#include <seastar/core/scheduling.hh>
 #include <seastar/core/weak_ptr.hh>
 
 #include <absl/container/btree_map.h>
@@ -105,6 +107,9 @@ public:
         ss::lowres_clock::duration stable_window;
         size_t min_size;
         size_t max_size;
+        // background reclaimer settings
+        ss::scheduling_group background_reclaimer_sg;
+        size_t min_free_memory = 64_MiB;
     };
 
     /*
@@ -217,7 +222,11 @@ public:
         [this](reclaimer::request r) { return reclaim(r); },
         reclaim_scope::sync)
       , _reclaim_opts(opts)
-      , _reclaim_size(_reclaim_opts.min_size) {}
+      , _reclaim_size(_reclaim_opts.min_size)
+      , _background_reclaimer(
+          *this, opts.min_free_memory, opts.background_reclaimer_sg) {
+        _background_reclaimer.start();
+    }
 
     batch_cache(const batch_cache&) = delete;
     batch_cache& operator=(const batch_cache&) = delete;
@@ -238,12 +247,15 @@ public:
       , _is_reclaiming(o._is_reclaiming)
       , _size_bytes(o._size_bytes)
       , _reclaim_opts(o._reclaim_opts)
-      , _reclaim_size(_reclaim_opts.min_size) {
+      , _reclaim_size(_reclaim_opts.min_size)
+      , _background_reclaimer(std::move(o._background_reclaimer)) {
         o._size_bytes = 0;
         o._is_reclaiming = false;
     }
 
     ~batch_cache() noexcept;
+
+    ss::future<> stop() { return _background_reclaimer.stop(); }
 
     /// Returns true if the cache is empty, and false otherwise.
     bool empty() const { return _lru.empty(); }
@@ -316,6 +328,34 @@ private:
         batch_cache& ref;
         bool prev;
     };
+    class background_reclaimer {
+    public:
+        explicit background_reclaimer(
+          batch_cache& c, size_t min_free_memory, ss::scheduling_group sg)
+          : _cache(c)
+          , _min_free_memory(min_free_memory)
+          , _sg(sg) {}
+
+        void notify() { _change.signal(); }
+
+        void start();
+        ss::future<> stop();
+
+        ss::future<> reclaim_loop();
+
+    private:
+        bool have_to_reclaim() const {
+            return ss::memory::stats().free_memory() < _min_free_memory;
+        }
+        bool _stopped = false;
+        ss::condition_variable _change;
+        batch_cache& _cache;
+        size_t _min_free_memory;
+        ss::scheduling_group _sg;
+        ss::future<> _reclaim_loop = ss::now();
+    };
+
+    friend background_reclaimer;
     friend batch_reclaiming_lock;
     /*
      * The entry point for the Seastar upcall for relcaiming memory. The
@@ -341,6 +381,7 @@ private:
     reclaim_options _reclaim_opts;
     ss::lowres_clock::time_point _last_reclaim;
     size_t _reclaim_size;
+    background_reclaimer _background_reclaimer;
 
     friend std::ostream& operator<<(std::ostream&, const reclaim_options&);
     friend std::ostream& operator<<(std::ostream&, const batch_cache&);

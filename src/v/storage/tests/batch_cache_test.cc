@@ -35,6 +35,8 @@ struct batch_cache_test_fixture {
     batch_cache_test_fixture()
       : cache(opts) {}
 
+    ~batch_cache_test_fixture() { cache.stop().get(); }
+
     storage::batch_cache cache;
 };
 
@@ -127,6 +129,7 @@ SEASTAR_THREAD_TEST_CASE(touch) {
         cache.reclaim(1);
         BOOST_CHECK(!b0.range());
         BOOST_CHECK(b1.range());
+        cache.stop().get();
     }
 
     {
@@ -146,6 +149,7 @@ SEASTAR_THREAD_TEST_CASE(touch) {
         cache.reclaim(1);
         BOOST_CHECK(b0.range());
         BOOST_CHECK(!b1.range());
+        cache.stop().get();
     }
 }
 

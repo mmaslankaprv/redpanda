@@ -13,6 +13,8 @@
 #include "utils/to_string.h"
 #include "vassert.h"
 
+#include <seastar/core/coroutine.hh>
+
 #include <fmt/ostream.h>
 
 namespace storage {
@@ -307,6 +309,30 @@ void batch_cache_index::truncate(model::offset offset) {
             _cache->evict(std::move(e.second.range()));
         });
         _index.erase(it, _index.end());
+    }
+}
+
+void batch_cache::background_reclaimer::start() {
+    _reclaim_loop = ss::with_scheduling_group(
+      _sg, [this] { return reclaim_loop(); });
+}
+ss::future<> batch_cache::background_reclaimer::stop() {
+    _stopped = true;
+    _change.signal();
+    return std::move(_reclaim_loop);
+}
+ss::future<> batch_cache::background_reclaimer::reclaim_loop() {
+    while (!_stopped) {
+        co_await _change.wait([this] { return have_to_reclaim() || _stopped; });
+        if (_stopped) {
+            co_return;
+        }
+        auto free = ss::memory::stats().free_memory();
+
+        if (free < _min_free_memory) {
+            auto to_reclaim = _min_free_memory - free;
+            _cache.reclaim(to_reclaim);
+        }
     }
 }
 
