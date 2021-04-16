@@ -30,6 +30,7 @@
 #include <seastar/core/coroutine.hh>
 #include <seastar/core/fstream.hh>
 #include <seastar/core/future.hh>
+#include <seastar/core/semaphore.hh>
 
 #include <fmt/ostream.h>
 
@@ -427,13 +428,18 @@ void consensus::dispatch_recovery(follower_index_metadata& idx) {
 }
 
 ss::future<result<model::offset>> consensus::linearizable_barrier() {
+    ss::semaphore_units<> u = co_await _op_lock.get_units();
+    co_return co_await do_linearizable_barrier(std::move(u));
+}
+
+ss::future<result<model::offset>>
+consensus::do_linearizable_barrier(ss::semaphore_units<> units) {
+    std::optional<ss::semaphore_units<>> u(std::move(units));
     using ret_t = result<model::offset>;
     struct state_snapshot {
         model::offset linearizable_offset;
         model::term_id term;
     };
-
-    std::optional<ss::semaphore_units<>> u = co_await _op_lock.get_units();
 
     if (_vstate != vote_state::leader) {
         co_return result<model::offset>(make_error_code(errc::not_leader));
@@ -553,7 +559,8 @@ ss::future<result<replicate_result>> consensus::do_replicate(
         _probe.replicate_requests_ack_none();
     }
     // For relaxed consistency, append data to leader disk without flush
-    // asynchronous replication is provided by Raft protocol recovery mechanism.
+    // asynchronous replication is provided by Raft protocol recovery
+    // mechanism.
     return _op_lock
       .with([this,
              expected_term,
@@ -575,8 +582,8 @@ ss::future<result<replicate_result>> consensus::do_replicate(
                      std::move(rdr), model::term_id(_term)),
                    update_last_quorum_index::no)
             .then([this](storage::append_result res) {
-                // only update visibility upper bound if all quorum replicated
-                // entries are committed already
+                // only update visibility upper bound if all quorum
+                // replicated entries are committed already
                 if (_commit_index >= _last_quorum_replicated_index) {
                     // for relaxed consistency mode update visibility upper
                     // bound with last offset appended to the log
@@ -606,8 +613,8 @@ void consensus::dispatch_flush_with_lock() {
 }
 
 model::offset consensus::last_stable_offset() const {
-    // TODO: handle transactions, when we implement them, for now LSO is simply
-    // equal to max consumable offset
+    // TODO: handle transactions, when we implement them, for now LSO is
+    // simply equal to max consumable offset
     return _majority_replicated_index;
 }
 
@@ -697,8 +704,8 @@ void consensus::dispatch_vote(bool leadership_transfer) {
         return;
     }
 
-    // if priority is to low, skip dispatching votes, do not take priority into
-    // account when we transfer leadership
+    // if priority is to low, skip dispatching votes, do not take priority
+    // into account when we transfer leadership
     if (current_priority_to_low && !leadership_transfer) {
         vlog(
           _ctxlog.trace,
@@ -877,8 +884,8 @@ ss::future<> consensus::start() {
           })
           .then([this](configuration_bootstrap_state st) {
               auto lstats = _log.offsets();
-              // if log term is newer than the one comming from voted_for state,
-              // we reset voted_for state
+              // if log term is newer than the one comming from voted_for
+              // state, we reset voted_for state
               if (lstats.dirty_offset_term > _term) {
                   _term = lstats.dirty_offset_term;
                   _voted_for = {};
@@ -889,10 +896,10 @@ ss::future<> consensus::start() {
                 lstats,
                 _term);
               /**
-               * The configuration manager state may be divereged from the log
-               * state, as log is flushed lazily, we have to make sure that the
-               * log and configuration manager has exactly the same offsets
-               * range
+               * The configuration manager state may be divereged from the
+               * log state, as log is flushed lazily, we have to make sure
+               * that the log and configuration manager has exactly the same
+               * offsets range
                */
               auto f = _configuration_manager.truncate(
                 details::next_offset(lstats.dirty_offset));
@@ -1057,8 +1064,8 @@ void consensus::read_voted_for() {
             _term = config.term;
         } catch (...) {
             /**
-             * If first attempt to read voted_for failed, read buffer once again
-             * and deserialize it with old version i.e. without vnode.
+             * If first attempt to read voted_for failed, read buffer once
+             * again and deserialize it with old version i.e. without vnode.
              *
              * NOTE: will be removed in future versions.
              */
@@ -1066,7 +1073,8 @@ void consensus::read_voted_for() {
               storage::kvstore::key_space::consensus, key);
             vlog(
               _ctxlog.info,
-              "triggerred voter for read fallback, reading previous version of "
+              "triggerred voter for read fallback, reading previous "
+              "version of "
               "voted for configuration");
             // fallback to old version
             auto config
@@ -1110,8 +1118,8 @@ consensus::get_last_entry_term(const storage::offset_stats& lstats) const {
     if (lstats.dirty_offset >= lstats.start_offset) {
         return lstats.dirty_offset_term;
     }
-    // prefix truncated whole log, last term must come from snapshot, as last
-    // entry is included into the snapshot
+    // prefix truncated whole log, last term must come from snapshot, as
+    // last entry is included into the snapshot
     vassert(
       _last_snapshot_index == lstats.dirty_offset,
       "Last log offset is smaller than its start offset, snapshot is "
@@ -1156,7 +1164,8 @@ ss::future<vote_reply> consensus::do_vote(vote_request&& r) {
     if (n_priority < _target_priority && !r.leadership_transfer) {
         vlog(
           _ctxlog.info,
-          "not grainting vote to node {}, it has priority {} which is lower "
+          "not grainting vote to node {}, it has priority {} which is "
+          "lower "
           "than current target priority {}",
           r.node_id,
           n_priority,
@@ -1201,9 +1210,9 @@ ss::future<vote_reply> consensus::do_vote(vote_request&& r) {
 
         // do not grant vote if log isn't ok
         if (!reply.log_ok) {
-            // even tough we step down we do not want to update the hbeat as it
-            // would cause subsequent votes to fail (_hbeat is updated by the
-            // leader)
+            // even tough we step down we do not want to update the hbeat as
+            // it would cause subsequent votes to fail (_hbeat is updated by
+            // the leader)
             _hbeat = clock_type::time_point::min();
             return ss::make_ready_future<vote_reply>(reply);
         }
@@ -1277,8 +1286,8 @@ consensus::do_append_entries(append_entries_request&& r) {
         return ss::make_ready_future<append_entries_reply>(std::move(reply));
     }
     /**
-     * When the current leader is alive, whenever a follower receives heartbeat,
-     * it updates its target priority to the initial value
+     * When the current leader is alive, whenever a follower receives
+     * heartbeat, it updates its target priority to the initial value
      */
     _target_priority = voter_priority::max();
     do_step_down();
@@ -1485,9 +1494,9 @@ ss::future<> consensus::truncate_to_latest_snapshot() {
     if (lstats.start_offset > _last_snapshot_index) {
         return ss::now();
     }
-    // we have to prefix truncate config manage at exactly last offset included
-    // in snapshot as this is the offset of configuration included in snapshot
-    // metadata
+    // we have to prefix truncate config manage at exactly last offset
+    // included in snapshot as this is the offset of configuration included
+    // in snapshot metadata
     return _configuration_manager.prefix_truncate(_last_snapshot_index)
       .then([this] {
           return _log.truncate_prefix(storage::truncate_prefix_config(
@@ -1669,7 +1678,8 @@ consensus::do_write_snapshot(model::offset last_included_index, iobuf&& data) {
     auto config = _configuration_manager.get(last_included_index);
     vassert(
       config.has_value(),
-      "Configuration for offset {} must be available in configuration manager: "
+      "Configuration for offset {} must be available in configuration "
+      "manager: "
       "{}",
       last_included_index,
       _configuration_manager);
@@ -1720,8 +1730,8 @@ ss::future<std::error_code> consensus::replicate_configuration(
             meta(),
             model::make_memory_record_batch_reader(std::move(batches)));
           /**
-           * We use replicate_batcher::do_flush directly as we already hold the
-           * _op_lock mutex when replicating configuration
+           * We use replicate_batcher::do_flush directly as we already hold
+           * the _op_lock mutex when replicating configuration
            */
           return _batcher
             .do_flush({}, std::move(req), std::move(u), std::move(seqs))
@@ -1769,9 +1779,9 @@ ss::future<storage::append_result> consensus::disk_append(
           if (should_update_last_quorum_idx) {
               /**
                * We have to update last quorum replicated index before we
-               * trigger read for followers recovery as recovery_stm will have
-               * to deceide if follower flush is required basing on last quorum
-               * replicated index.
+               * trigger read for followers recovery as recovery_stm will
+               * have to deceide if follower flush is required basing on
+               * last quorum replicated index.
                */
               _last_quorum_replicated_index = ret.last_offset;
           }
@@ -1896,7 +1906,8 @@ ss::future<> consensus::maybe_commit_configuration(ss::semaphore_units<> u) {
               if (!contains_current) {
                   vlog(
                     _ctxlog.trace,
-                    "current node is not longer group member, stepping down");
+                    "current node is not longer group member, stepping "
+                    "down");
                   do_step_down();
               }
           });
@@ -1939,8 +1950,8 @@ consensus::do_maybe_update_leader_commit_idx(ss::semaphore_units<> u) {
           _commit_index);
         _commit_index_updated.broadcast();
         _event_manager.notify_commit_index(_commit_index);
-        // if we successfully acknowledged all quorum writes we can make pending
-        // relaxed consistency requests visible
+        // if we successfully acknowledged all quorum writes we can make
+        // pending relaxed consistency requests visible
         if (_commit_index >= _last_quorum_replicated_index) {
             maybe_update_last_visible_index(lstats.dirty_offset);
         } else {
@@ -2048,7 +2059,8 @@ ss::future<timeout_now_reply> consensus::timeout_now(timeout_now_request&& r) {
     if (_vstate != vote_state::follower) {
         vlog(
           _ctxlog.debug,
-          "Ignoring timeout request in non-follower state {} from node {} at "
+          "Ignoring timeout request in non-follower state {} from node {} "
+          "at "
           "term {}",
           _vstate,
           r.node_id,
@@ -2070,9 +2082,9 @@ ss::future<timeout_now_reply> consensus::timeout_now(timeout_now_request&& r) {
       r.term);
 
     /*
-     * One optimization that we can investigate is returning _term+1 (despite
-     * the election having not yet started) and allowing the receiver to step
-     * down even before it receives a request vote rpc.
+     * One optimization that we can investigate is returning _term+1
+     * (despite the election having not yet started) and allowing the
+     * receiver to step down even before it receives a request vote rpc.
      */
     return ss::make_ready_future<timeout_now_reply>(timeout_now_reply{
       .target_node_id = r.node_id,
@@ -2127,7 +2139,8 @@ consensus::transfer_leadership(std::optional<model::node_id> target) {
     if (!target_rni) {
         vlog(
           _ctxlog.debug,
-          "Cannot transfer leadership to node {} not found in configuration",
+          "Cannot transfer leadership to node {} not found in "
+          "configuration",
           *target);
         return seastar::make_ready_future<std::error_code>(
           make_error_code(errc::node_does_not_exists));
@@ -2330,9 +2343,10 @@ voter_priority consensus::next_target_priority() {
 }
 
 /**
- * We use simple policy where we calculate priority based on the position of the
- * node in configuration broker vector. We shuffle brokers in raft configuration
- * so it should give us fairly even distribution of leaders across the nodes.
+ * We use simple policy where we calculate priority based on the position of
+ * the node in configuration broker vector. We shuffle brokers in raft
+ * configuration so it should give us fairly even distribution of leaders
+ * across the nodes.
  */
 voter_priority consensus::get_node_priority(vnode rni) const {
     auto& latest_cfg = _configuration_manager.get_latest();
@@ -2345,8 +2359,8 @@ voter_priority consensus::get_node_priority(vnode rni) const {
 
     if (it == brokers.cend()) {
         /**
-         * If node is not present in current configuration i.e. was added to the
-         * cluster, return max, this way for joining node we will use
+         * If node is not present in current configuration i.e. was added to
+         * the cluster, return max, this way for joining node we will use
          * priorityless, classic raft leader election
          */
         return voter_priority::max();

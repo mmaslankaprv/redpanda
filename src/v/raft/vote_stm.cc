@@ -9,6 +9,7 @@
 
 #include "raft/vote_stm.h"
 
+#include "model/fundamental.h"
 #include "outcome_future_utils.h"
 #include "raft/consensus.h"
 #include "raft/consensus_utils.h"
@@ -245,10 +246,10 @@ ss::future<> vote_stm::update_vote_state(ss::semaphore_units<> u) {
     _ptr->_last_quorum_replicated_index = _ptr->_log.offsets().committed_offset;
     _ptr->trigger_leadership_notification();
 
-    return replicate_config_as_new_leader(std::move(u))
-      .then([this](std::error_code ec) {
+    return _ptr->do_linearizable_barrier(std::move(u))
+      .then([this](result<model::offset> o) {
           // if we didn't replicated configuration, step down
-          if (ec) {
+          if (!o) {
               vlog(
                 _ctxlog.info,
                 "unable to replicate configuration as a leader, stepping down");

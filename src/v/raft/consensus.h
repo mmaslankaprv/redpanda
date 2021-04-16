@@ -35,6 +35,7 @@
 #include "utils/mutex.h"
 
 #include <seastar/core/abort_source.hh>
+#include <seastar/core/semaphore.hh>
 #include <seastar/core/sharded.hh>
 #include <seastar/util/bool_class.hh>
 
@@ -420,9 +421,11 @@ private:
     voter_priority next_target_priority();
     voter_priority get_node_priority(vnode) const;
 
+    ss::future<result<model::offset>>
+      do_linearizable_barrier(ss::semaphore_units<>);
     /**
-     * Return true if there is no state backing this consensus group i.e. there
-     * is no snapshot and log is empty
+     * Return true if there is no state backing this consensus group i.e.
+     * there is no snapshot and log is empty
      */
     bool is_initial_state() const {
         static constexpr model::offset not_initialized{};
