@@ -106,10 +106,15 @@ ss::future<> segment::remove_persistent_state() {
       std::move(rm), [](const std::vector<std::filesystem::path>& to_remove) {
           return ss::do_for_each(
             to_remove, [](const std::filesystem::path& name) {
-                return ss::remove_file(name.c_str())
-                  .handle_exception([name](std::exception_ptr e) {
-                      vlog(stlog.info, "error removing {}: {}", name, e);
-                  });
+                return ss::file_exists(name.c_str()).then([name](bool exists) {
+                    if (!exists) {
+                        return ss::now();
+                    }
+                    return ss::remove_file(name.c_str())
+                      .handle_exception([name](std::exception_ptr e) {
+                          vlog(stlog.info, "error removing {}: {}", name, e);
+                      });
+                });
             });
       });
 }
