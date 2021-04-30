@@ -42,6 +42,7 @@
 
 #include <fmt/format.h>
 
+#include <iostream>
 #include <iterator>
 
 using namespace std::literals::chrono_literals;
@@ -262,6 +263,8 @@ ss::future<> disk_log_impl::garbage_collect_oldest_segments(
 }
 
 ss::future<> disk_log_impl::do_compact(compaction_config cfg) {
+    auto bgb = compaction_backlog();
+    std::cout << "DBG: backlog before -> " << bgb << std::endl;
     // find first not compacted segment
     auto segit = std::find_if(
       _segs.begin(), _segs.end(), [](ss::lw_shared_ptr<segment>& s) {
@@ -286,6 +289,7 @@ ss::future<> disk_log_impl::do_compact(compaction_config cfg) {
           stlog.debug,
           "segment {} compaction result: {}",
           seg->reader().filename());
+        _compaction_ratio.update(result.compaction_ratio());
         // if we compacted segment return, otherwise loop
         if (result.did_compact()) {
             co_return;
@@ -299,7 +303,10 @@ ss::future<> disk_log_impl::do_compact(compaction_config cfg) {
           "adjejcent segments of {}, compaction result: {}",
           config().ntp(),
           r);
+        _compaction_ratio.update(r.compaction_ratio());
     }
+    auto bg = compaction_backlog();
+    std::cout << "DBG: backlog after -> " << bg << std::endl;
 }
 
 std::optional<std::pair<segment_set::iterator, segment_set::iterator>>
@@ -1099,6 +1106,59 @@ disk_log_impl::update_configuration(ntp_config::default_overrides o) {
     }
 
     return ss::now();
+}
+size_t disk_log_impl::compaction_backlog() const {
+    if (!config().is_compacted() || _segs.empty()) {
+        return 0;
+    }
+
+    std::vector<std::vector<ss::lw_shared_ptr<segment>>> segments_per_term;
+    auto current_term = _segs.front()->offsets().term;
+    segments_per_term.emplace_back();
+    auto idx = 0;
+    size_t backlog = 0;
+    for (auto& s : _segs) {
+        
+        if (!s->finished_self_compaction()) {
+            backlog += s->size_bytes();
+        }
+        // if has appender do not include into adjacent segments calculation
+        if (s->has_appender()) {
+            continue;
+        }
+
+        if (current_term != s->offsets().term) {
+            ++idx;
+            segments_per_term.emplace_back();
+        }
+        segments_per_term[idx].push_back(s);
+    }
+    auto cf = _compaction_ratio.get();
+    for (const auto& segs : segments_per_term) {
+        if (segs.size() == 1) {
+            continue;
+        }
+        size_t max_pow = segs.size() - 1;
+        for (size_t i = 0; i < segs.size(); ++i) {
+            auto& s = segs[i];
+            auto sz = s->finished_self_compaction() ? s->size_bytes()
+                                                    : s->size_bytes() * cf;
+
+            auto cf_sum = cf; // to the power of 0
+            std::cout << "s" << i << " + ";
+            for (size_t p = 1; p < max_pow; ++p) {
+                std::cout << "s" << i << "c^" << p << " + ";
+                cf_sum += std::pow(cf, p);
+            }
+            if (i > 0) {
+                max_pow--;
+            }
+            backlog += sz * cf_sum;
+        }
+        std::cout << std::endl;
+    }
+
+    return backlog;
 }
 
 std::ostream& disk_log_impl::print(std::ostream& o) const {

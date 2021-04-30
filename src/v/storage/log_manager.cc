@@ -16,6 +16,7 @@
 #include "resource_mgmt/io_priority.h"
 #include "storage/batch_cache.h"
 #include "storage/compacted_index_writer.h"
+#include "storage/compaction_backlog_sampler.h"
 #include "storage/fs_utils.h"
 #include "storage/kvstore.h"
 #include "storage/log.h"
@@ -44,8 +45,11 @@
 #include <fmt/format.h>
 
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <optional>
 
 namespace storage {
@@ -308,6 +312,11 @@ absl::flat_hash_set<model::ntp> log_manager::get_all_ntps() const {
         r.insert(p.first);
     }
     return r;
+}
+
+ss::future<int64_t> compaction_backlog_sampler::sample_backlog() {
+    return _log_manager.map_reduce0(
+      [](log_manager&) { return 1; }, int64_t(0), std::plus<>());
 }
 
 std::ostream& operator<<(std::ostream& o, log_config::storage_type t) {

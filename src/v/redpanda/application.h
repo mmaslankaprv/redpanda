@@ -27,6 +27,7 @@
 #include "seastarx.h"
 #include "security/credential_store.h"
 #include "storage/fwd.h"
+#include "utils/backlog_controller.h"
 
 #include <seastar/core/app-template.hh>
 #include <seastar/core/metrics_registration.hh>
@@ -116,6 +117,7 @@ private:
     ss::logger _log;
 
     std::unique_ptr<coproc::wasm::event_listener> _wasm_event_listener;
+    std::unique_ptr<backlog_controller> _compaction_controller;
     ss::sharded<rpc::connection_cache> _raft_connection_cache;
     ss::sharded<kafka::group_manager> _group_manager;
     ss::sharded<rpc::server> _rpc;
