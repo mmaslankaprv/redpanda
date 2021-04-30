@@ -683,7 +683,6 @@ ss::future<> do_write_concatenated_compacted_index(
                       if (!verified_successfully) {
                           return ss::now();
                       }
-
                       return make_compacted_index_writer(
                                target_path, cfg.sanitize, cfg.iopc)
                         .then([&readers](compacted_index_writer writer) {
@@ -713,8 +712,9 @@ ss::future<> write_concatenated_compacted_index(
       std::move(segments),
       [cfg, target_path = std::move(target_path)](
         std::vector<ss::lw_shared_ptr<segment>>& segments) mutable {
+          auto compacted_path = internal::compacted_index_path(target_path);
           return do_write_concatenated_compacted_index(
-            std::move(target_path), segments, cfg);
+            std::move(compacted_path), segments, cfg);
       });
 }
 
