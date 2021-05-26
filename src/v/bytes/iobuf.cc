@@ -10,6 +10,7 @@
 #include "bytes/iobuf.h"
 
 #include "bytes/details/io_allocation_size.h"
+#include "units.h"
 #include "vassert.h"
 
 #include <seastar/core/bitops.hh>
@@ -58,8 +59,8 @@ ss::future<iobuf> read_iobuf_exactly(ss::input_stream<char>& in, size_t n) {
         return ss::do_until(
                  [&n] { return n == 0; },
                  [&n, &in, &b] {
-                     return in.read_up_to(n).then(
-                       [&n, &b](ss::temporary_buffer<char> buf) {
+                     return in.read_up_to(std::min(n, 64_KiB))
+                       .then([&n, &b](ss::temporary_buffer<char> buf) {
                            if (buf.empty()) {
                                n = 0;
                                return;

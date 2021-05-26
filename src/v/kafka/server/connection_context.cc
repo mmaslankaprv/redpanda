@@ -18,6 +18,7 @@
 #include "kafka/server/quota_manager.h"
 #include "kafka/server/request_context.h"
 #include "units.h"
+#include "utils/hist_helper.h"
 
 #include <seastar/core/coroutine.hh>
 #include <seastar/core/scattered_message.hh>
@@ -64,7 +65,9 @@ ss::future<> connection_context::process_one_request() {
                       _rs.probe().header_corrupted();
                       return ss::make_ready_future<>();
                   }
-                  return dispatch_method_once(std::move(h.value()), s);
+                  static thread_local hist_helper hh("k-proto-dispatch");
+                  return hh.measure(
+                    dispatch_method_once(std::move(h.value()), s));
               });
       });
 }
@@ -210,7 +213,8 @@ connection_context::dispatch_method_once(request_header hdr, size_t size) {
           }
           auto remaining = size - sizeof(raw_request_header)
                            - hdr.client_id_buffer.size();
-          return read_iobuf_exactly(_rs.conn->input(), remaining)
+          static thread_local hist_helper hh("k-proto-read-payload");
+          return hh.measure(read_iobuf_exactly(_rs.conn->input(), remaining))
             .then([this, hdr = std::move(hdr), sres = std::move(sres)](
                     iobuf buf) mutable {
                 if (_rs.abort_requested()) {

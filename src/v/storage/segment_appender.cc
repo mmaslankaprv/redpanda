@@ -13,6 +13,7 @@
 #include "likely.h"
 #include "storage/chunk_cache.h"
 #include "storage/logger.h"
+#include "utils/hist_helper.h"
 #include "vassert.h"
 #include "vlog.h"
 
@@ -81,7 +82,9 @@ ss::future<> segment_appender::append(bytes_view s) {
 ss::future<> segment_appender::append(const iobuf& io) {
     return ss::do_for_each(
       io.begin(), io.end(), [this](const iobuf::fragment& f) {
-          return append(f.get(), f.size());
+          static thread_local hist_helper h("sa-fragment-append");
+
+          return h.measure(append(f.get(), f.size()));
       });
 }
 
@@ -111,10 +114,13 @@ ss::future<> segment_appender::do_append(const char* buf, const size_t n) {
      */
     if (_previously_inactive) {
         _previously_inactive = false;
-        return ss::get_units(_concurrent_flushes, ss::semaphore::max_counter())
-          .then([this, buf, n](ss::semaphore_units<>) {
-              return do_append(buf, n);
-          });
+        static thread_local hist_helper h("sa-prev-inactive");
+
+        return h.measure(
+          ss::get_units(_concurrent_flushes, ss::semaphore::max_counter())
+            .then([this, buf, n](ss::semaphore_units<>) {
+                return do_append(buf, n);
+            }));
     }
 
     /*
@@ -123,20 +129,25 @@ ss::future<> segment_appender::do_append(const char* buf, const size_t n) {
      * its chunk was reclaimed into the chunk cache.
      */
     if (unlikely(!_head && _committed_offset > 0)) {
-        return internal::chunks()
-          .get()
+        static thread_local hist_helper h("sa-get-chunk");
+
+        return h.measure(internal::chunks().get())
           .then([this](ss::lw_shared_ptr<chunk> chunk) {
               _head = std::move(chunk);
           })
           .then([this, buf, n] {
-              return hydrate_last_half_page().then(
-                [this, buf, n] { return do_append(buf, n); });
+              static thread_local hist_helper h("sa-hydrate-last-half-page");
+              return h.measure(hydrate_last_half_page()).then([this, buf, n] {
+                  return do_append(buf, n);
+              });
           });
     }
 
     if (next_committed_offset() + n > _fallocation_offset) {
-        return do_next_adaptive_fallocation().then(
-          [this, buf, n] { return do_append(buf, n); });
+        static thread_local hist_helper h("sa-f-allocate");
+        return h.measure(do_next_adaptive_fallocation()).then([this, buf, n] {
+            return do_append(buf, n);
+        });
     }
 
     size_t written = 0;
@@ -151,8 +162,8 @@ ss::future<> segment_appender::do_append(const char* buf, const size_t n) {
     if (written == n) {
         return ss::make_ready_future<>();
     }
-
-    return ss::get_units(_concurrent_flushes, 1)
+    static thread_local hist_helper h("sa-wait-for-units");
+    return h.measure(ss::get_units(_concurrent_flushes, 1))
       .then([this, next_buf = buf + written, next_sz = n - written](
               ss::semaphore_units<>) {
           // do not hold the units!
@@ -389,7 +400,10 @@ void segment_appender::dispatch_background_head_write() {
       _concurrent_flushes,
       1,
       [h, w, this, start_offset, expected, src] {
-          return _out.dma_write(start_offset, src, expected, _opts.priority)
+          static thread_local hist_helper hdma("sa-dma-write");
+          return hdma
+            .measure(
+              _out.dma_write(start_offset, src, expected, _opts.priority))
             .then([this, h, w, expected](size_t got) {
                 if (h->is_full()) {
                     h->reset();

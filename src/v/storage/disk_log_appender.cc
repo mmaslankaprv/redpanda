@@ -15,6 +15,7 @@
 #include "storage/logger.h"
 #include "storage/segment.h"
 #include "storage/segment_appender.h"
+#include "utils/hist_helper.h"
 #include "vlog.h"
 
 #include <type_traits>
@@ -114,7 +115,9 @@ disk_log_appender::append_batch_to_segment(const model::record_batch& batch) {
         return ss::make_ready_future<ss::stop_iteration>(
           ss::stop_iteration::no);
     }
-    return _seg->append(batch).then([this](append_result r) {
+    static thread_local hist_helper happend("da-batch-append");
+
+    return happend.measure(_seg->append(batch)).then([this](append_result r) {
         _idx = r.last_offset + model::offset(1); // next base offset
         _byte_size += r.byte_size;
         // do not track base_offset, only the last one

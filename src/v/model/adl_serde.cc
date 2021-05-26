@@ -10,6 +10,7 @@
 #include "model/adl_serde.h"
 
 #include "model/record.h"
+#include "model/record_utils.h"
 
 #include <seastar/core/smp.hh>
 
@@ -230,26 +231,14 @@ void adl<model::record_batch>::to(iobuf& out, model::record_batch&& batch) {
       .bhdr = batch.header(),
       .is_compressed = static_cast<int8_t>(batch.compressed() ? 1 : 0)};
     reflection::serialize(out, hdr);
-    if (batch.compressed()) {
-        reflection::serialize(out, std::move(batch).release_data());
-        return;
-    }
-    batch.for_each_record(
-      [&out](model::record r) { reflection::serialize(out, std::move(r)); });
+    reflection::serialize(out, std::move(batch).release_data());
 }
 
 model::record_batch adl<model::record_batch>::from(iobuf_parser& in) {
     auto hdr = reflection::adl<batch_header>{}.from(in);
-    if (hdr.is_compressed == 1) {
-        auto io = reflection::adl<iobuf>{}.from(in);
-        return model::record_batch(hdr.bhdr, std::move(io));
-    }
-    auto recs = std::vector<model::record>{};
-    recs.reserve(hdr.bhdr.record_count);
-    for (int i = 0; i < hdr.bhdr.record_count; ++i) {
-        recs.push_back(adl<model::record>{}.from(in));
-    }
-    return model::record_batch(hdr.bhdr, std::move(recs));
+    auto data = reflection::adl<iobuf>{}.from(in);
+    return model::record_batch(
+      hdr.bhdr, std::move(data), model::record_batch::tag_ctor_ng{});
 }
 
 void adl<model::partition_metadata>::to(

@@ -25,6 +25,7 @@
 #include "raft/vote_stm.h"
 #include "reflection/adl.h"
 #include "storage/api.h"
+#include "utils/hist_helper.h"
 #include "vlog.h"
 
 #include <seastar/core/coroutine.hh>
@@ -1758,11 +1759,13 @@ ss::future<storage::append_result> consensus::disk_append(
       storage::log_append_config::fsync::no,
       _io_priority,
       model::timeout_clock::now() + _disk_timeout};
-    return details::for_each_ref_extract_configuration(
-             _log.offsets().dirty_offset,
-             std::move(reader),
-             _log.make_appender(cfg),
-             cfg.timeout)
+    static thread_local hist_helper h("raft-disk-write");
+    return h
+      .measure(details::for_each_ref_extract_configuration(
+        _log.offsets().dirty_offset,
+        std::move(reader),
+        _log.make_appender(cfg),
+        cfg.timeout))
       .then([this, should_update_last_quorum_idx](
               std::tuple<ret_t, std::vector<offset_configuration>> t) {
           auto& [ret, configurations] = t;
