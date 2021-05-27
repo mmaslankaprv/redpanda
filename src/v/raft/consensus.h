@@ -172,6 +172,8 @@ public:
 
     ss::future<result<replicate_result>>
     replicate(model::record_batch_reader&&, replicate_options);
+    replicate_stages
+    replicate_in_stages(model::record_batch_reader&&, replicate_options);
 
     /**
      * Replication happens only when expected_term matches the current _term
@@ -198,7 +200,8 @@ public:
      */
     ss::future<result<replicate_result>>
     replicate(model::term_id, model::record_batch_reader&&, replicate_options);
-
+    replicate_stages replicate_in_stages(
+      model::term_id, model::record_batch_reader&&, replicate_options);
     ss::future<model::record_batch_reader> make_reader(
       storage::log_reader_config,
       std::optional<clock_type::time_point> = std::nullopt);
@@ -339,7 +342,7 @@ private:
     append_entries_reply
       make_append_entries_reply(vnode, storage::append_result);
 
-    ss::future<result<replicate_result>> do_replicate(
+    replicate_stages do_replicate(
       std::optional<model::term_id>,
       model::record_batch_reader&&,
       replicate_options);
