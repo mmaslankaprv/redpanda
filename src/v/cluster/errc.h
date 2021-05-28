@@ -38,6 +38,10 @@ enum class errc : int16_t {
     update_in_progress,
     user_exists,
     user_does_not_exist,
+    invalid_producer_epoch,
+    sequence_out_of_order,
+    pid_prepare_in_progress,
+    same_pid_produce_too_frequent
 };
 struct errc_category final : public std::error_category {
     const char* name() const noexcept final { return "cluster::errc"; }
@@ -96,6 +100,14 @@ struct errc_category final : public std::error_category {
             return "User already exists";
         case errc::user_does_not_exist:
             return "User does not exist";
+        case errc::invalid_producer_epoch:
+            return "Invalid idempotent producer epoch";
+        case errc::sequence_out_of_order:
+            return "Producer sequence ID out of order";
+        case errc::pid_prepare_in_progress:
+            return "Client keeps producing after initiating a prepare for pid";
+        case errc::same_pid_produce_too_frequent:
+            return "Too frequent produce with same pid";
         default:
             return "cluster::errc::unknown";
         }
