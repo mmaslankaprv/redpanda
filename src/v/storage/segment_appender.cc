@@ -385,28 +385,30 @@ void segment_appender::dispatch_background_head_write() {
       ss::make_lw_shared<inflight_write>(_committed_offset));
     auto w = _inflight.back();
     auto h = std::exchange(_head, nullptr);
-    (void)ss::with_semaphore(
-      _concurrent_flushes,
-      1,
-      [h, w, this, start_offset, expected, src] {
-          return _out.dma_write(start_offset, src, expected, _opts.priority)
-            .then([this, h, w, expected](size_t got) {
-                if (h->is_full()) {
-                    h->reset();
-                }
-                if (h->is_empty()) {
-                    internal::chunks().add(h);
-                } else {
-                    _head = h;
-                }
-                if (unlikely(expected != got)) {
-                    return size_missmatch_error("chunk::write", expected, got);
-                }
-                maybe_advance_stable_offset(w);
-                return ss::make_ready_future<>();
-            });
-      })
-      .handle_exception([this](std::exception_ptr e) {
+
+    auto write_fut = _out.dma_write(
+      start_offset, src, expected, _opts.priority);
+
+    auto f = write_fut.then([this, h, w, expected](size_t got) {
+        if (h->is_full()) {
+            h->reset();
+        }
+        if (h->is_empty()) {
+            internal::chunks().add(h);
+        } else {
+            _head = h;
+        }
+        if (unlikely(expected != got)) {
+            return size_missmatch_error("chunk::write", expected, got);
+        }
+        maybe_advance_stable_offset(w);
+        return ss::make_ready_future<>();
+    });
+
+    (void)
+      ss::with_semaphore(_concurrent_flushes, 1, [f = std::move(f)]() mutable {
+          return std::move(f);
+      }).handle_exception([this](std::exception_ptr e) {
           vassert(false, "Could not dma_write: {} - {}", e, *this);
       });
 }
