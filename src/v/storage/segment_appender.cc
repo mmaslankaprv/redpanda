@@ -20,6 +20,7 @@
 #include <seastar/core/future-util.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/semaphore.hh>
+#include <seastar/core/shared_ptr.hh>
 
 #include <fmt/format.h>
 
@@ -37,7 +38,10 @@ segment_appender::segment_appender(ss::file f, options opts)
   : _out(std::move(f))
   , _opts(opts)
   , _concurrent_flushes(ss::semaphore::max_counter())
+  , _current_writes(
+      ss::make_lw_shared<ss::semaphore>(ss::semaphore::max_counter()))
   , _inactive_timer([this] { handle_inactive_timer(); }) {
+    vassert(_current_writes, "null current writes sem encountered");
     const auto alignment = _out.disk_write_dma_alignment();
     vassert(
       internal::chunk_cache::alignment % alignment == 0,
@@ -66,6 +70,8 @@ segment_appender::segment_appender(segment_appender&& o) noexcept
   , _bytes_flush_pending(o._bytes_flush_pending)
   , _concurrent_flushes(std::move(o._concurrent_flushes))
   , _head(std::move(o._head))
+  , _prev_head_write(std::move(o._prev_head_write))
+  , _current_writes(std::move(o._current_writes))
   , _inflight(std::move(o._inflight))
   , _callbacks(std::exchange(o._callbacks, nullptr))
   , _inactive_timer([this] { handle_inactive_timer(); })
@@ -98,6 +104,13 @@ ss::future<> segment_appender::append(const char* buf, const size_t n) {
     });
 }
 
+/*
+ * optimization strategy: submit aligned writes OR implement a filling batch at
+ * the parser level. we can pass in a flag: if we expect a flush immediately
+ * after the append and its not aligned, the add a alignment batch which is
+ * processing by the parser to skip but keeps us from synchronization on the
+ * head.
+ */
 ss::future<> segment_appender::do_append(const char* buf, const size_t n) {
     vassert(!_closed, "append() on closed segment: {}", *this);
 
@@ -108,6 +121,10 @@ ss::future<> segment_appender::do_append(const char* buf, const size_t n) {
      * full buffers. non-full buffers, upon write completion, replace the
      * current head. if the inactive timer dispatches a background write, it may
      * clobber the head when it finishes if it is racing with append.
+     *
+     * Leaving for simplicity so we dont' change too much at once, but this
+     * barrier is probably not needed now since we have implemented write
+     * serialization to the _head and this is what that is meant to fix.
      */
     if (_previously_inactive) {
         _previously_inactive = false;
@@ -134,6 +151,8 @@ ss::future<> segment_appender::do_append(const char* buf, const size_t n) {
           });
     }
 
+    // inserts a global barrier. i think we can optimize this, too, so we don't
+    // have to wait on all previous writes.
     if (next_committed_offset() + n > _fallocation_offset) {
         return do_next_adaptive_fallocation().then(
           [this, buf, n] { return do_append(buf, n); });
@@ -165,6 +184,9 @@ ss::future<> segment_appender::do_append(const char* buf, const size_t n) {
       });
 }
 
+// ahh so the inactive timer isn't so much to reclaim the buffer as it is to
+// make sure we flush to disk to make data visible... which must be why we
+// cancel the timer in flush because well, we are flushing updates.
 void segment_appender::handle_inactive_timer() {
     _previously_inactive = true;
 
@@ -185,6 +207,10 @@ void segment_appender::handle_inactive_timer() {
      * chunk and return it to the cache. but we need a retry loop because the
      * background write may take some time and it steals _head until it
      * completes. it may also return the chunk to the cache if it empty.
+     *
+     * even now that disptach doesn't steal the head i think this is still safe.
+     * even tho dispatch doesn't steal head any longer, the write is under the
+     * semaphore. so once we acquire the semaphore there is no more race.
      */
     if (_concurrent_flushes.try_wait(ss::semaphore::max_counter())) {
         if (_head && !_head->bytes_pending()) {
@@ -265,30 +291,32 @@ ss::future<> segment_appender::truncate(size_t n) {
       "Cannot ask to truncate at:{} which is more bytes than we have:{} - {}",
       file_byte_offset(),
       *this);
-    return flush().then([this, n] { return do_truncation(n); }).then([this, n] {
-        _committed_offset = n;
-        _fallocation_offset = n;
-        auto f = ss::now();
-        if (_head) {
-            // NOTE: Important to reset chunks for offset accounting.  reset any
-            // partial state, since after the truncate, it makes no sense to
-            // keep any old state/pointers/sizes, etc
-            _head->reset();
-        } else {
-            // https://github.com/vectorizedio/redpanda/issues/43
-            f = internal::chunks().get().then(
-              [this](ss::lw_shared_ptr<chunk> chunk) {
-                  _head = std::move(chunk);
-              });
-        }
-        return f.then([this] { return hydrate_last_half_page(); });
-    });
+    return global_flush()
+      .then([this, n] { return do_truncation(n); })
+      .then([this, n] {
+          _committed_offset = n;
+          _fallocation_offset = n;
+          auto f = ss::now();
+          if (_head) {
+              // NOTE: Important to reset chunks for offset accounting.  reset
+              // any partial state, since after the truncate, it makes no sense
+              // to keep any old state/pointers/sizes, etc
+              _head->reset();
+          } else {
+              // https://github.com/vectorizedio/redpanda/issues/43
+              f = internal::chunks().get().then(
+                [this](ss::lw_shared_ptr<chunk> chunk) {
+                    _head = std::move(chunk);
+                });
+          }
+          return f.then([this] { return hydrate_last_half_page(); });
+      });
 }
 
 ss::future<> segment_appender::close() {
     vassert(!_closed, "close() on closed segment: {}", *this);
     _closed = true;
-    return flush()
+    return global_flush()
       .then([this] { return do_truncation(_committed_offset); })
       .then([this] { return _out.close(); });
 }
@@ -384,19 +412,25 @@ void segment_appender::dispatch_background_head_write() {
     _inflight.emplace_back(
       ss::make_lw_shared<inflight_write>(_committed_offset));
     auto w = _inflight.back();
-    auto h = std::exchange(_head, nullptr);
+
+    /*
+     * if _head is full it will go back into the chunk cache. otherwise, it is
+     * a partial write and we leave it place so that the next write can append
+     * without requiring the chunk to be rehydrated.
+     */
+    const auto full = _head->is_full();
+    auto h = full ? std::exchange(_head, nullptr) : _head;
 
     auto write_fut = _out.dma_write(
       start_offset, src, expected, _opts.priority);
 
-    auto f = write_fut.then([this, h, w, expected](size_t got) {
-        if (h->is_full()) {
+    // need to capture the `full` state here rather than looking at the chunk
+    // itself since the chunk reference may be shared across multiple inflight
+    // writes to the same chunk with the last write being full.
+    auto f = write_fut.then([this, h, w, expected, full](size_t got) {
+        if (full) {
             h->reset();
-        }
-        if (h->is_empty()) {
             internal::chunks().add(h);
-        } else {
-            _head = h;
         }
         if (unlikely(expected != got)) {
             return size_missmatch_error("chunk::write", expected, got);
@@ -405,15 +439,79 @@ void segment_appender::dispatch_background_head_write() {
         return ss::make_ready_future<>();
     });
 
-    (void)
-      ss::with_semaphore(_concurrent_flushes, 1, [f = std::move(f)]() mutable {
+    // the easist thing here might be to introduce a another semaphore in a lw
+    // shared ptr and use that for the write batch semahpore and then leave this
+    // one the same and use it for the global barrier thing. later can optimize.
+
+    vassert(_current_writes, "null current writes sem encountered");
+    f = ss::with_semaphore(*_current_writes, 1, [f = std::move(f)]() mutable {
+        return std::move(f);
+    });
+
+    f = ss::with_semaphore(
+      _concurrent_flushes, 1, [f = std::move(f)]() mutable {
           return std::move(f);
-      }).handle_exception([this](std::exception_ptr e) {
-          vassert(false, "Could not dma_write: {} - {}", e, *this);
       });
+
+    f = f.handle_exception([this](std::exception_ptr e) {
+        vassert(false, "Could not dma_write: {} - {}", e, *this);
+    });
+
+    /*
+     * multiple in-flight writes for the same head chunk must be serialized to
+     * ensure writes are not lost due to races. an example of such a race is:
+     *
+     *   1. append(1 byte) <-- head is partially filled
+     *   2. flush()        <-- background head write dispatched
+     *   3. append(big)    <-- background head write dispatched
+     *
+     * In (2) a flush dispatches a write for a partially filled head. While that
+     * write is still active, a new append fills the current head and dispatches
+     * a full write. If the write in (2) won, the data from (3) would be lost.
+     */
+    _prev_head_write = _prev_head_write.then(
+      [f = std::move(f)]() mutable { return std::move(f); });
+
+    /*
+     * when a chunk is full it needs to be sequenced with previous writes
+     * (see above), but no future writes to the chunk are possible so the
+     * dependency chain is reset for the next chunk.
+     */
+    if (full) {
+        _prev_head_write = ss::now();
+    }
 }
 
+/*
+ * notice that if you call flush twice the second flush will not have any writes
+ * to wait on. this implies a certain restriction on usage by the caller. it
+ * cannot arbitrarily call flush it need to co-design that with calling append.
+ * basiclaly, exactly one flush for some set of appends.
+ *
+ * TODO probably want a gate here too
+ */
 ss::future<> segment_appender::flush() {
+    _inactive_timer.cancel();
+    if (_head && _head->bytes_pending()) {
+        dispatch_background_head_write();
+    }
+    vassert(_current_writes, "null current writes sem encountered");
+    auto writes = std::exchange(
+      _current_writes,
+      ss::make_lw_shared<ss::semaphore>(ss::semaphore::max_counter()));
+    vassert(_current_writes, "null current writes sem encountered");
+    vassert(writes, "null current writes sem encountered");
+    return ss::with_semaphore(
+             *writes,
+             ss::semaphore::max_counter(),
+             [this]() mutable { return _out.flush(); })
+      .handle_exception([this](std::exception_ptr e) {
+          vassert(false, "Could not flush: {} - {}", e, *this);
+      })
+      .finally([writes] {});
+}
+
+ss::future<> segment_appender::global_flush() {
     _inactive_timer.cancel();
     if (_head && _head->bytes_pending()) {
         dispatch_background_head_write();
