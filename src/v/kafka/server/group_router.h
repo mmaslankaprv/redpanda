@@ -25,11 +25,13 @@
 #include "kafka/server/group_manager.h"
 #include "kafka/types.h"
 #include "seastarx.h"
+#include "utils/foreign_promise.h"
 
 #include <seastar/core/reactor.hh>
 #include <seastar/core/scheduling.hh>
 #include <seastar/core/sharded.hh>
 
+#include <exception>
 #include <type_traits>
 
 namespace kafka {
@@ -129,8 +131,48 @@ public:
         return route(std::move(request), &group_manager::leave_group);
     }
 
-    auto offset_commit(offset_commit_request&& request) {
-        return route(std::move(request), &group_manager::offset_commit);
+    group::offset_commit_stages offset_commit(offset_commit_request&& request) {
+        auto m = shard_for(request.data.group_id);
+        if (!m) {
+            return group::offset_commit_stages(
+              offset_commit_response(request, error_code::not_coordinator));
+        }
+        request.ntp = std::move(m->first);
+        foreign_promise<> dispatched;
+        auto dispatched_f = dispatched.get_future();
+        auto f = with_scheduling_group(
+          _sg,
+          [this,
+           shard = m->second,
+           request = std::move(request),
+           dispatched = std::move(dispatched)]() mutable {
+              return _group_manager.invoke_on(
+                shard,
+                _ssg,
+                [request = std::move(request),
+                 dispatched = std::move(dispatched)](
+                  group_manager& mgr) mutable {
+                    auto stages = mgr.offset_commit(std::move(request));
+                    /**
+                     * dispatched future is always ready before committed one,
+                     * we do not have to use gate in here
+                     */
+                    (void)stages.dispatched.then_wrapped(
+                      [d = std::move(dispatched)](ss::future<> f) mutable {
+                          try {
+                              f.get();
+                              return std::move(d).dispatch_set_value();
+                          } catch (...) {
+                              return std::move(d).dispatch_set_exception(
+                                std::current_exception());
+                          }
+                      });
+
+                    return std::move(stages.committed);
+                });
+          });
+        return group::offset_commit_stages(
+          std::move(dispatched_f), std::move(f));
     }
 
     auto txn_offset_commit(txn_offset_commit_request&& request) {
