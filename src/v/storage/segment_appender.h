@@ -73,6 +73,7 @@ public:
     ss::future<> truncate(size_t n);
     ss::future<> close();
     ss::future<> flush();
+    ss::future<> global_flush();
 
     struct callbacks {
         virtual void committed_physical_offset(size_t) = 0;
@@ -109,6 +110,8 @@ private:
     size_t _bytes_flush_pending{0};
     ss::semaphore _concurrent_flushes;
     ss::lw_shared_ptr<chunk> _head;
+    ss::future<> _prev_head_write = ss::now();
+    ss::lw_shared_ptr<ss::semaphore> _current_writes;
 
     struct inflight_write {
         bool done;
