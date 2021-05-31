@@ -164,7 +164,7 @@ static partition_produce_stages partition_append(
     auto stages = partition->replicate(
       bid, std::move(reader), acks_to_replicate_options(acks));
     return partition_produce_stages{
-      .dispatched = std::move(stages.request_enequeued),
+      .dispatched = std::move(stages.request_enqueued),
       .produced = stages.replicate_finished.then_wrapped(
         [partition, id, num_records = num_records](
           ss::future<result<raft::replicate_result>> f) {
