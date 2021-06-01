@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <limits>
 #include <numeric>
 
 void validate_offsets(
@@ -1602,4 +1603,117 @@ FIXTURE_TEST(disposing_in_use_reader, storage_test_fixture) {
     // destroyed
     BOOST_REQUIRE(truncate_f.available());
     truncate_f.get();
+}
+
+FIXTURE_TEST(test_reading_up_to_max_offset_with_cache, storage_test_fixture) {
+    auto cfg = default_log_config(test_dir);
+    cfg.max_compacted_segment_size = 100_MiB;
+    cfg.stype = storage::log_config::storage_type::disk;
+    cfg.cache = storage::with_cache::yes;
+    storage::ntp_config::default_overrides overrides;
+    overrides.cleanup_policy_bitflags
+      = model::cleanup_policy_bitflags::deletion;
+
+    ss::abort_source as;
+    storage::log_manager mgr = make_log_manager(cfg);
+    auto deferred = ss::defer([&mgr]() mutable { mgr.stop().get0(); });
+    auto ntp = model::ntp("default", "test", 0);
+    auto log = mgr
+                 .manage(storage::ntp_config(
+                   ntp,
+                   mgr.config().base_dir,
+                   std::make_unique<storage::ntp_config::default_overrides>(
+                     overrides)))
+                 .get0();
+
+    auto disk_log = get_disk_log(log);
+
+    // add a segment with random keys until a certain size
+    auto add_segment = [&log, disk_log](size_t size, model::term_id term) {
+        do {
+            append_single_record_batch(log, 10, term, 5_KiB, true);
+        } while (disk_log->segments().back()->size_bytes() < size);
+    };
+    add_segment(10_MiB, model::term_id(1));
+
+    log.flush().get0();
+    for (auto i = 0; i < 10; ++i) {
+        auto max_offset = model::offset(
+          random_generators::get_int(log.offsets().dirty_offset()));
+        storage::log_reader_config reader_config(
+          model::offset(0),
+          max_offset, // take offset from middle of the batch
+          0,
+          std::numeric_limits<size_t>::max(),
+          ss::default_priority_class(),
+          std::nullopt,
+          std::nullopt,
+          std::nullopt);
+
+        auto rdr = log.make_reader(reader_config).get();
+        auto batches = model::consume_reader_to_memory(
+                         std::move(rdr), model::no_timeout)
+                         .get();
+
+        if (!batches.empty()) {
+            BOOST_REQUIRE(batches.back().last_offset() <= max_offset);
+        }
+    }
+}
+
+FIXTURE_TEST(
+  test_reading_up_to_max_offset_without_cache, storage_test_fixture) {
+    auto cfg = default_log_config(test_dir);
+    cfg.max_compacted_segment_size = 100_MiB;
+    cfg.stype = storage::log_config::storage_type::disk;
+    cfg.cache = storage::with_cache::yes;
+    storage::ntp_config::default_overrides overrides;
+    overrides.cleanup_policy_bitflags
+      = model::cleanup_policy_bitflags::deletion;
+
+    ss::abort_source as;
+    storage::log_manager mgr = make_log_manager(cfg);
+    auto deferred = ss::defer([&mgr]() mutable { mgr.stop().get0(); });
+    auto ntp = model::ntp("default", "test", 0);
+    auto log = mgr
+                 .manage(storage::ntp_config(
+                   ntp,
+                   mgr.config().base_dir,
+                   std::make_unique<storage::ntp_config::default_overrides>(
+                     overrides)))
+                 .get0();
+
+    auto disk_log = get_disk_log(log);
+
+    // add a segment with random keys until a certain size
+    auto add_segment = [&log, disk_log](size_t size, model::term_id term) {
+        do {
+            append_single_record_batch(log, 10, term, 5_KiB, true);
+        } while (disk_log->segments().back()->size_bytes() < size);
+    };
+    add_segment(10_MiB, model::term_id(1));
+
+    log.flush().get0();
+    for (auto i = 0; i < 10; ++i) {
+        auto max_offset = model::offset(
+          random_generators::get_int(log.offsets().dirty_offset()));
+        storage::log_reader_config reader_config(
+          model::offset(0),
+          max_offset, // take offset from middle of the batch
+          0,
+          std::numeric_limits<size_t>::max(),
+          ss::default_priority_class(),
+          std::nullopt,
+          std::nullopt,
+          std::nullopt);
+
+        auto rdr = log.make_reader(reader_config).get();
+        auto batches = model::consume_reader_to_memory(
+                         std::move(rdr), model::no_timeout)
+                         .get();
+
+        if (!batches.empty()) {
+            BOOST_REQUIRE(batches.back().last_offset() <= max_offset);
+        }
+    }
 }
