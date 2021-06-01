@@ -18,6 +18,7 @@
 #include "kafka/server/fetch_session.h"
 #include "kafka/server/handlers/fetch/fetch_plan_executor.h"
 #include "kafka/server/handlers/fetch/fetch_planner.h"
+#include "kafka/server/logger.h"
 #include "kafka/server/materialized_partition.h"
 #include "kafka/server/partition_proxy.h"
 #include "kafka/server/replicated_partition.h"
@@ -225,7 +226,7 @@ static ss::future<read_result> do_read_from_ntp(
             max_offset = partition->last_stable_offset();
         }
     }
-
+    ntp_config.cfg.max_offset = std::min(max_offset, ntp_config.cfg.max_offset);
     if (
       ntp_config.cfg.start_offset < partition->start_offset()
       || ntp_config.cfg.start_offset > max_offset) {
