@@ -48,7 +48,7 @@ public:
     ss::future<result<replicate_result>>
     replicate(std::optional<model::term_id>, model::record_batch_reader&&);
 
-    ss::future<> flush();
+    ss::future<> flush(ss::semaphore_units<> u);
     ss::future<> stop();
 
     // it will lock on behalf of caller to append entries to leader log.

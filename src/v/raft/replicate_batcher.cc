@@ -37,9 +37,9 @@ replicate_batcher::replicate_batcher(consensus* ptr, size_t cache_size)
 ss::future<result<replicate_result>> replicate_batcher::replicate(
   std::optional<model::term_id> expected_term, model::record_batch_reader&& r) {
     return do_cache(expected_term, std::move(r)).then([this](item_ptr i) {
-        return _lock.with([this] { return flush(); }).then([i] {
-            return i->_promise.get_future();
-        });
+        return _lock.get_units()
+          .then([this](ss::semaphore_units<> u) { return flush(std::move(u)); })
+          .then([i] { return i->_promise.get_future(); });
     });
 }
 
@@ -94,7 +94,6 @@ replicate_batcher::do_cache_with_backpressure(
 
     return ss::get_units(_max_batch_size_sem, std::min(bytes, _max_batch_size))
       .then([this, expected_term, batches = std::move(batches)](
-
               ss::semaphore_units<> u) mutable {
           size_t record_count = 0;
           auto i = ss::make_lw_shared<item>();
@@ -114,15 +113,16 @@ replicate_batcher::do_cache_with_backpressure(
       });
 }
 
-ss::future<> replicate_batcher::flush() {
+ss::future<> replicate_batcher::flush(ss::semaphore_units<> u) {
     auto item_cache = std::exchange(_item_cache, {});
     if (item_cache.empty()) {
         return ss::now();
     }
     return ss::with_gate(
-      _ptr->_bg, [this, item_cache = std::move(item_cache)]() mutable {
+      _ptr->_bg,
+      [this, item_cache = std::move(item_cache), bu = std::move(u)]() mutable {
           return _ptr->_op_lock.get_units().then(
-            [this, item_cache = std::move(item_cache)](
+            [this, item_cache = std::move(item_cache), bu = std::move(bu)](
               ss::semaphore_units<> u) mutable {
                 // we have to check if we are the leader
                 // it is critical as term could have been updated already by
