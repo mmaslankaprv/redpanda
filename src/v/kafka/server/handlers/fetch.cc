@@ -18,6 +18,7 @@
 #include "kafka/server/fetch_session.h"
 #include "kafka/server/handlers/fetch/fetch_plan_executor.h"
 #include "kafka/server/handlers/fetch/fetch_planner.h"
+#include "kafka/server/logger.h"
 #include "kafka/server/materialized_partition.h"
 #include "kafka/server/partition_proxy.h"
 #include "kafka/server/replicated_partition.h"
@@ -167,6 +168,14 @@ static ss::future<read_result> read_from_partition(
           lso,
           std::move(aborted_transactions));
     }
+    if (result.last_offset > hw) {
+        klog.error(
+          "{} Result last offset {} is greater than HW: {}",
+          part.ntp(),
+          result.last_offset,
+          hw);
+    }
+
     co_return read_result(
       std::move(data), start_o, hw, lso, std::move(aborted_transactions));
 }

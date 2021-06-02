@@ -1928,6 +1928,8 @@ consensus::do_maybe_update_leader_commit_idx(ss::semaphore_units<> u) {
 
           return model::offset{};
       });
+    // make sure that leader writes are visible
+    majority_match = std::min(majority_match, lstats.committed_offset);
     if (
       majority_match > _commit_index
       && _log.get_term(majority_match) == _term) {
