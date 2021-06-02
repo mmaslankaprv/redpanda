@@ -572,15 +572,32 @@ offset_stats disk_log_impl::offsets() const {
     // with reverse iterators, so we manually find the iterator
     segment_set::type end;
     segment_set::type term_start;
+    segment_set::type last_committed;
     for (int i = (int)_segs.size() - 1; i >= 0; --i) {
         auto& seg = _segs[i];
         if (!seg->empty()) {
             if (!end) {
                 end = seg;
             }
+
+            /**
+             * move back until we find a segment with initialized committed
+             * offset
+             */
+            if (
+              !last_committed
+              || last_committed->offsets().committed_offset
+                   < model::offset{0}) {
+                last_committed = seg;
+            }
+            if (
+              last_committed->offsets().committed_offset
+              && seg->offsets().term < end->offsets().term) {
+                break;
+            }
             // find term start offset
             if (seg->offsets().term < end->offsets().term) {
-                break;
+                continue;
             }
             term_start = seg;
         }
@@ -606,8 +623,8 @@ offset_stats disk_log_impl::offsets() const {
     return storage::offset_stats{
       .start_offset = start_offset,
 
-      .committed_offset = eof.committed_offset,
-      .committed_offset_term = eof.term,
+      .committed_offset = last_committed->offsets().committed_offset,
+      .committed_offset_term = last_committed->offsets().term,
 
       .dirty_offset = eof.dirty_offset,
       .dirty_offset_term = eof.term,
