@@ -72,6 +72,7 @@ segment_appender::segment_appender(segment_appender&& o) noexcept
   , _head(std::move(o._head))
   , _prev_head_write(std::move(o._prev_head_write))
   , _current_writes(std::move(o._current_writes))
+  , _prev_flush(std::move(o._prev_flush))
   , _inflight(std::move(o._inflight))
   , _callbacks(std::exchange(o._callbacks, nullptr))
   , _inactive_timer([this] { handle_inactive_timer(); })
@@ -495,20 +496,32 @@ ss::future<> segment_appender::flush() {
     if (_head && _head->bytes_pending()) {
         dispatch_background_head_write();
     }
-    vassert(_current_writes, "null current writes sem encountered");
+
     auto writes = std::exchange(
       _current_writes,
       ss::make_lw_shared<ss::semaphore>(ss::semaphore::max_counter()));
-    vassert(_current_writes, "null current writes sem encountered");
-    vassert(writes, "null current writes sem encountered");
-    return ss::with_semaphore(
-             *writes,
-             ss::semaphore::max_counter(),
-             [this]() mutable { return _out.flush(); })
-      .handle_exception([this](std::exception_ptr e) {
-          vassert(false, "Could not flush: {} - {}", e, *this);
-      })
-      .finally([writes] {});
+
+    ss::promise<> p;
+    auto flushed = p.get_future();
+
+    _prev_flush = _prev_flush.then([this, writes, p = std::move(p)]() mutable {
+        return ss::with_semaphore(
+                 *writes,
+                 ss::semaphore::max_counter(),
+                 [this] { return _out.flush(); })
+          .then_wrapped(
+            [this, writes, p = std::move(p)](ss::future<> f) mutable {
+                if (!f.failed()) {
+                    p.set_value();
+                    return ss::now();
+                }
+                p.set_exception(std::runtime_error("ouch"));
+                vassert(
+                  false, "Could not flush: {} - {}", f.get_exception(), *this);
+            });
+    });
+
+    return flushed;
 }
 
 ss::future<> segment_appender::global_flush() {

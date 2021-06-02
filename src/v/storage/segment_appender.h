@@ -112,6 +112,7 @@ private:
     ss::lw_shared_ptr<chunk> _head;
     ss::future<> _prev_head_write = ss::now();
     ss::lw_shared_ptr<ss::semaphore> _current_writes;
+    ss::future<> _prev_flush = ss::now();
 
     struct inflight_write {
         bool done;
