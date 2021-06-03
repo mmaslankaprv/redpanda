@@ -1775,8 +1775,10 @@ ss::future<std::error_code> consensus::replicate_configuration(
            * We use replicate_batcher::do_flush directly as we already hold the
            * _op_lock mutex when replicating configuration
            */
+          std::vector<ss::semaphore_units<>> units;
+          units.push_back(std::move(u));
           return _batcher
-            .do_flush({}, std::move(req), std::move(u), std::move(seqs))
+            .do_flush({}, std::move(req), std::move(units), std::move(seqs))
             .then([] { return std::error_code(errc::success); });
       });
 }
@@ -1977,6 +1979,8 @@ consensus::do_maybe_update_leader_commit_idx(ss::semaphore_units<> u) {
 
           return model::offset{};
       });
+    // make sure that leader writes are visible
+    majority_match = std::min(majority_match, lstats.committed_offset);
     if (
       majority_match > _commit_index
       && _log.get_term(majority_match) == _term) {
