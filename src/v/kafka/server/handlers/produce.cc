@@ -237,8 +237,9 @@ static partition_produce_stages produce_topic_partition(
     auto reader = reader_from_lcore_batch(std::move(batch));
     auto start = std::chrono::steady_clock::now();
 
-    ss::promise<> dispatch;
-    auto dispatch_f = dispatch.get_future();
+    auto dispatch = ss::make_foreign<std::unique_ptr<ss::promise<>>>(
+      std::make_unique<ss::promise<>>());
+    auto dispatch_f = dispatch->get_future();
     auto f
       = octx.rctx.partition_manager()
           .invoke_on(
@@ -259,7 +260,7 @@ static partition_produce_stages produce_topic_partition(
                       source_shard,
                       [dispatch = std::move(dispatch),
                        pid = ntp.tp.partition]() mutable {
-                          dispatch.set_value();
+                          dispatch->set_value();
                           return produce_response::partition{
                             .partition_index = pid,
                             .error_code
@@ -272,7 +273,7 @@ static partition_produce_stages produce_topic_partition(
                       source_shard,
                       [dispatch = std::move(dispatch),
                        pid = ntp.tp.partition]() mutable {
-                          dispatch.set_value();
+                          dispatch->set_value();
                           return produce_response::partition{
                             .partition_index = pid,
                             .error_code = error_code::not_leader_for_partition};
@@ -294,13 +295,13 @@ static partition_produce_stages produce_topic_partition(
                             source_shard,
                             [dispatch = std::move(dispatch),
                              e = f.get_exception()]() mutable {
-                                dispatch.set_exception(e);
+                                dispatch->set_exception(e);
                             });
                       }
                       return ss::smp::submit_to(
                         source_shard,
                         [dispatch = std::move(dispatch)]() mutable {
-                            dispatch.set_value();
+                            dispatch->set_value();
                         });
                   })
                   .then([f = std::move(stages.produced)]() mutable {

@@ -138,8 +138,9 @@ public:
               offset_commit_response(request, error_code::not_coordinator));
         }
         request.ntp = std::move(m->first);
-        ss::promise<> dispatched;
-        auto dispatched_f = dispatched.get_future();
+        auto dispatched = ss::make_foreign<std::unique_ptr<ss::promise<>>>(
+          std::make_unique<ss::promise<>>());
+        auto dispatched_f = dispatched->get_future();
         auto f = with_scheduling_group(
           _sg,
           [this,
@@ -166,12 +167,12 @@ public:
                                 source_shard,
                                 [d = std::move(d),
                                  e = f.get_exception()]() mutable {
-                                    d.set_exception(e);
+                                    d->set_exception(e);
                                 });
                           }
                           return ss::smp::submit_to(
                             source_shard,
-                            [d = std::move(d)]() mutable { d.set_value(); });
+                            [d = std::move(d)]() mutable { d->set_value(); });
                       })
                       .then([f = std::move(stages.committed)]() mutable {
                           return std::move(f);
