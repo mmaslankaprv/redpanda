@@ -508,6 +508,7 @@ private:
     // consensus state
     model::offset _commit_index;
     model::term_id _term;
+    model::offset _flushed_offset{};
 
     // read at `ss::future<> start()`
     vnode _voted_for;
