@@ -23,6 +23,7 @@
 #include "random/simple_time_jitter.h"
 #include "rpc/connection_cache.h"
 #include "storage/fwd.h"
+#include "utils/abortable_monitor.h"
 
 namespace cluster {
 
@@ -38,6 +39,17 @@ public:
     static constexpr auto accepted_commands
       = make_commands_list<decommission_node_cmd, recommission_node_cmd>{};
     static constexpr ss::shard_id shard = 0;
+    enum class node_update_type : int8_t {
+        added,
+        decommissioned,
+        recommissioned
+    };
+
+    struct node_update {
+        model::node_id id;
+        node_update_type type;
+    };
+
     members_manager(
       consensus_ptr,
       ss::sharded<members_table>&,
@@ -58,6 +70,9 @@ public:
     bool is_batch_applicable(const model::record_batch& b) {
         return b.header().type == model::record_batch_type::node_management_cmd;
     }
+
+    ss::future<members_manager::node_update> wait_for_node_updates(
+      std::optional<std::reference_wrapper<ss::abort_source>> as);
 
 private:
     using seed_iterator = std::vector<config::seed_server>::const_iterator;
@@ -103,5 +118,6 @@ private:
     ss::sharded<ss::abort_source>& _as;
     config::tls_config _rpc_tls_config;
     ss::gate _gate;
+    abortable_monitor<node_update> _update_monitor;
 };
 } // namespace cluster

@@ -11,6 +11,7 @@
 
 #include "cluster/cluster_utils.h"
 #include "cluster/commands.h"
+#include "cluster/fwd.h"
 #include "cluster/logger.h"
 #include "cluster/members_table.h"
 #include "cluster/partition_allocator.h"
@@ -170,11 +171,34 @@ members_manager::apply_update(model::record_batch b) {
     co_return co_await ss::visit(
       cmd,
       [this](decommission_node_cmd cmd) mutable {
-          return dispatch_updates_to_cores(cmd);
+          auto id = cmd.key;
+          return dispatch_updates_to_cores(cmd).then(
+            [this, id](std::error_code error) {
+                if (!error) {
+                    _allocator.local().decommission_node(id);
+                    _update_monitor.notify(node_update{
+                      .id = id, .type = node_update_type::decommissioned});
+                }
+                return error;
+            });
       },
       [this](recommission_node_cmd cmd) mutable {
-          return dispatch_updates_to_cores(cmd);
+          auto id = cmd.key;
+          return dispatch_updates_to_cores(cmd).then(
+            [this, id](std::error_code error) {
+                if (!error) {
+                    _allocator.local().recommission_node(id);
+                    _update_monitor.notify(node_update{
+                      .id = id, .type = node_update_type::recommissioned});
+                }
+                return error;
+            });
       });
+}
+
+ss::future<members_manager::node_update> members_manager::wait_for_node_updates(
+  std::optional<std::reference_wrapper<ss::abort_source>> as) {
+    return _update_monitor.wait(as);
 }
 
 template<typename Cmd>
@@ -202,6 +226,7 @@ members_manager::dispatch_updates_to_cores(Cmd cmd) {
 
 ss::future<> members_manager::stop() {
     vlog(clusterlog.info, "stopping cluster::members_manager...");
+    _update_monitor.stop();
     return _gate.close();
 }
 
