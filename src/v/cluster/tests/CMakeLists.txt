@@ -40,7 +40,7 @@ set(srcs
 rp_test(
   UNIT_TEST
   BINARY_NAME test_cluster
-  SOURCES ${srcs}
+  SOURCES partition_allocator_tests_new.cc
   LIBRARIES v::seastar_testing_main v::application v::storage_test_utils
   LABELS cluster
 )
