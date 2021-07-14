@@ -172,10 +172,10 @@ struct replicas_to_move {
 
     model::node_id id;
     uint32_t left_to_move;
-    friend std::ostream& operator<<(std::ostream& o, replicas_to_move r);
+    friend std::ostream& operator<<(std::ostream& o, const replicas_to_move& r);
 };
 
-std::ostream& operator<<(std::ostream& o, replicas_to_move r) {
+std::ostream& operator<<(std::ostream& o, const replicas_to_move& r) {
     fmt::print(o, "{{id: {}, left_to_move: {}}}", r.id, r.left_to_move);
     return o;
 };
