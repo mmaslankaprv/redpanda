@@ -357,7 +357,8 @@ private:
       std::optional<model::term_id>,
       model::record_batch_reader&&,
       replicate_options);
-    ss::future<result<replicate_result>> do_append_replicate_relaxed(
+      
+    ss::future<result<replicate_result>> do_replicate_lock(
       std::optional<model::term_id>,
       model::record_batch_reader,
       consistency_level,
@@ -411,7 +412,7 @@ private:
     ss::future<> flush_log();
     /// \brief called by the vote timer, to dispatch a write under
     /// the ops semaphore
-    void dispatch_flush_with_lock();
+    void flush_in_background();
 
     void maybe_step_down();
 

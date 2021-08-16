@@ -25,6 +25,7 @@
 #include "raft/vote_stm.h"
 #include "reflection/adl.h"
 #include "storage/api.h"
+#include "storage/types.h"
 #include "vlog.h"
 
 #include <seastar/core/coroutine.hh>
@@ -580,12 +581,7 @@ replicate_stages consensus::do_replicate(
 
     if (opts.consistency == consistency_level::quorum_ack) {
         _probe.replicate_requests_ack_all();
-
-        return wrap_stages_with_gate(
-          _bg, _batcher.replicate(expected_term, std::move(rdr)));
-    }
-
-    if (opts.consistency == consistency_level::leader_ack) {
+    } else if (opts.consistency == consistency_level::leader_ack) {
         _probe.replicate_requests_ack_leader();
     } else {
         _probe.replicate_requests_ack_none();
@@ -605,7 +601,7 @@ replicate_stages consensus::do_replicate(
        rdr = std::move(rdr)](ss::future<ss::semaphore_units<>> f) mutable {
           if (!f.failed()) {
               enqueued.set_value();
-              return do_append_replicate_relaxed(
+              return do_replicate_lock(
                 expected_term, std::move(rdr), lvl, f.get());
           }
           enqueued.set_exception(f.get_exception());
@@ -616,7 +612,7 @@ replicate_stages consensus::do_replicate(
       _bg, replicate_stages(std::move(enqueued_f), std::move(replicated)));
 }
 
-ss::future<result<replicate_result>> consensus::do_append_replicate_relaxed(
+ss::future<result<replicate_result>> consensus::do_replicate_lock(
   std::optional<model::term_id> expected_term,
   model::record_batch_reader rdr,
   consistency_level lvl,
@@ -629,12 +625,15 @@ ss::future<result<replicate_result>> consensus::do_append_replicate_relaxed(
     if (expected_term.has_value() && expected_term.value() != _term) {
         return seastar::make_ready_future<ret_t>(errc::not_leader);
     }
+    auto update_last_replicated_quorum = lvl == consistency_level::quorum_ack
+                                           ? update_last_quorum_index::yes
+                                           : update_last_quorum_index::no;
     _last_write_consistency_level = lvl;
     return disk_append(
              model::make_record_batch_reader<details::term_assigning_reader>(
                std::move(rdr), model::term_id(_term)),
-             update_last_quorum_index::no)
-      .then([this](storage::append_result res) {
+             update_last_replicated_quorum)
+      .then([this, lvl, u = std::move(u)](storage::append_result res) {
           // only update visibility upper bound if all quorum
           // replicated entries are committed already
           if (_commit_index >= _last_quorum_replicated_index) {
@@ -644,22 +643,51 @@ ss::future<result<replicate_result>> consensus::do_append_replicate_relaxed(
                 _visibility_upper_bound_index, res.last_offset);
               maybe_update_majority_replicated_index();
           }
-          return ret_t(replicate_result{.last_offset = res.last_offset});
+
+          if (lvl == consistency_level::quorum_ack) {
+              flush_in_background();
+              // this is happening outside of _opsem
+              // store offset and term of an appended entry
+              const auto appended_offset = res.last_offset;
+              const auto appended_term = res.last_term;
+              /**
+               * we have to finish replication when committed offset
+               * is greater or equal to the appended offset or when
+               * term have changed after commit_index update, if that
+               * happend it means that entry might have been either
+               * commited or truncated
+               */
+              auto stop_cond = [this, appended_offset, appended_term] {
+                  return _commit_index >= appended_offset
+                         || _term > appended_term;
+              };
+              return _commit_index_updated.wait(stop_cond).then(
+                [this, appended_offset, appended_term] {
+                    if (unlikely(appended_term != _term)) {
+                        if (_log.get_term(appended_offset) != appended_term) {
+                            return ret_t(errc::replicated_entry_truncated);
+                        }
+                    }
+                    vlog(
+                      _ctxlog.trace,
+                      "Replication success, last offset: {}, term: "
+                      "{}",
+                      appended_offset,
+                      appended_term);
+                    return ret_t(
+                      replicate_result{.last_offset = appended_offset});
+                });
+          }
+
+          return ss::make_ready_future<ret_t>(
+            replicate_result{.last_offset = res.last_offset});
       })
-      .finally([this, u = std::move(u)] { _probe.replicate_done(); });
+      .finally([this] { _probe.replicate_done(); });
 }
 
-void consensus::dispatch_flush_with_lock() {
-    if (!_has_pending_flushes) {
-        return;
-    }
+void consensus::flush_in_background() {
     (void)ss::with_gate(_bg, [this] {
-        return _op_lock.with([this] {
-            if (!_has_pending_flushes) {
-                return ss::make_ready_future<>();
-            }
-            return flush_log();
-        });
+        return flush_log().then([this] { maybe_update_leader_commit_idx(); });
     });
 }
 
@@ -1810,20 +1838,18 @@ ss::future<std::error_code> consensus::replicate_configuration(
           for (auto& b : batches) {
               b.set_term(model::term_id(_term));
           }
-          auto seqs = next_followers_request_seq();
-          append_entries_request req(
-            _self,
-            meta(),
-            model::make_memory_record_batch_reader(std::move(batches)));
-          /**
-           * We use replicate_batcher::do_flush directly as we already hold the
-           * _op_lock mutex when replicating configuration
-           */
-          std::vector<ss::semaphore_units<>> units;
-          units.push_back(std::move(u));
-          return _batcher
-            .do_flush({}, std::move(req), std::move(units), std::move(seqs))
-            .then([] { return std::error_code(errc::success); });
+
+          return do_replicate_lock(
+                   {},
+                   model::make_memory_record_batch_reader(std::move(batches)),
+                   consistency_level::quorum_ack,
+                   std::move(u))
+            .then([](result<replicate_result> res) {
+                if (res.has_error()) {
+                    return res.error();
+                }
+                return make_error_code(errc::success);
+            });
       });
 }
 
@@ -2133,18 +2159,18 @@ group_configuration consensus::config() const {
     return _configuration_manager.get_latest();
 }
 
-static std::ostream&
-operator<<(std::ostream& os, const consensus::vote_state& state) {
-    switch (state) {
-    case consensus::vote_state::leader:
-        return os << "{leader}";
-    case consensus::vote_state::follower:
-        return os << "{follower}";
-    case consensus::vote_state::candidate:
-        return os << "{candidate}";
-    }
-    std::terminate(); // make gcc happy
-}
+// static std::ostream&
+// operator<<(std::ostream& os, const consensus::vote_state& state) {
+//     switch (state) {
+//     case consensus::vote_state::leader:
+//         return os << "{leader}";
+//     case consensus::vote_state::follower:
+//         return os << "{follower}";
+//     case consensus::vote_state::candidate:
+//         return os << "{candidate}";
+//     }
+//     std::terminate(); // make gcc happy
+// }
 
 ss::future<timeout_now_reply> consensus::timeout_now(timeout_now_request&& r) {
     if (unlikely(is_request_target_node_invalid("timeout_now", r))) {

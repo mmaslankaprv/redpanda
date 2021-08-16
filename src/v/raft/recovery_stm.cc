@@ -501,19 +501,18 @@ bool recovery_stm::is_recovery_finished() {
       meta.value()->match_index,
       max_offset);
 
-    bool is_up_to_date = meta.value()->match_index == max_offset;
-    bool quorum_writes = _ptr->_visibility_upper_bound_index
-                         <= _ptr->_commit_index;
+    // bool is_up_to_date = meta.value()->match_index == max_offset;
+    // bool quorum_writes = _ptr->_visibility_upper_bound_index
+    //                      <= _ptr->_commit_index;
     /**
      * We do not stop recovery for relaxed consistency recoveries as we want
      * recoveries to be send immediately after leader disk append. For low
      * volume producers we might have to wait for the next heartbeat to send
      * recovery request to follower which would lead to increased E2E latency
      */
-    return (is_up_to_date && quorum_writes) // fully caught up
-           || _stop_requested               // stop requested
-           || _term != _ptr->term()         // term changed
-           || !_ptr->is_leader();           // no longer a leader
+    return _stop_requested          // stop requested
+           || _term != _ptr->term() // term changed
+           || !_ptr->is_leader();   // no longer a leader
 }
 
 ss::future<> recovery_stm::apply() {
