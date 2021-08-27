@@ -1,0 +1,12 @@
+---
+- name: change redpanda configuration
+  gather_facts: no
+  become: yes
+  hosts: redpanda
+  remote_user: fedora
+  tasks:
+  - name: remove
+    ansible.builtin.lineinfile:
+      path: /etc/redpanda/redpanda.yaml
+      regexp: 'pandaproxy:.*'
+      state: absent

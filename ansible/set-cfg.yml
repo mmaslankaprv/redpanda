@@ -1,0 +1,34 @@
+---
+- name: change redpanda configuration
+  gather_facts: no
+  become: yes
+  hosts: redpanda
+  remote_user: fedora
+  tasks:
+  - name: create default config
+    copy:
+          dest: "/etc/redpanda/redpanda.yaml"
+          content: |
+            organization: "vectorized-test"
+            cluster_id: "vectorized-cluster"
+            pid_file: "/var/lib/redpanda/pid"
+
+            redpanda:
+                data_directory: "/var/lib/redpanda/data"
+                node_id: {{ hostvars[inventory_hostname].id }}
+                rpc_server:
+                    address: "{{ hostvars[inventory_hostname].private_ip }}"
+                    port: 33145
+                kafka_api:
+                    address: "{{ hostvars[inventory_hostname].private_ip }}"
+                    port: 9092
+                admin:
+                    address: "{{ hostvars[inventory_hostname].private_ip }}"
+                    port: 9644
+                seed_servers:
+            {% for host in ansible_play_batch%}
+                  - node_id: {{ hostvars[host].id }}
+                    host: 
+                      address: "{{ hostvars[host].private_ip }}"
+                      port: 33145
+            {% endfor %}

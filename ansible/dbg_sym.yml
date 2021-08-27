@@ -1,0 +1,28 @@
+---
+    - name: deploy-cluster
+      become: yes
+      hosts: redpanda
+      gather_facts: no
+      vars:
+        sha1: "b8ac882"
+        compiler: "clang"
+        bt: "release"
+        dir: "v"
+        # sha1: "b4f95ca"
+      tasks:
+        - name: apt install deps
+        apt:
+          name: iotop,sysstat,psmisc,telnet,htop,iftop,kafkacat,fio,systemd-coredump
+          state: present
+        - name: copy debug symbols
+          copy:
+            dest: /tmp/redpanda_dbgsym.deb
+            src: /home/mmaslanka/dev/v/build/{{bt}}/{{compiler}}/dist/debian/redpanda-dbgsym_0.0-dev-{{sha1}}_amd64.deb
+        - name: remove old dbgsym
+          apt:
+            name: redpanda-dbgsym
+            state: absent
+        - name: apt install new dbgsym
+          apt:
+            deb:  /tmp/redpanda_dbgsym.deb
+    

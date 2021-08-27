@@ -1,0 +1,16 @@
+---
+- name: deploy-cluster
+  become: yes
+  hosts: redpanda
+  gather_facts: yes
+  vars:
+    version:  "20.12.7-1-c2c8599"
+    #version:  "20.11.6-1-f54d86a"
+    #version:  "0.99.24-1-25c3a09"
+  tasks:
+    - name: update redpanda package
+      apt:
+        name: redpanda={{version}}
+        update_cache: yes
+        state: present
+        force: yes

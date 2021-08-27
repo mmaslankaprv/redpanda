@@ -1,0 +1,11 @@
+---
+- name: get kafka connections count
+  gather_facts: no
+  hosts: redpanda
+  tasks:
+  - name: count connection
+    shell:
+      cmd: "netstat -panel | grep 9092" 
+    register: out
+  - debug:
+      msg: "{{ out.stdout_lines }}"

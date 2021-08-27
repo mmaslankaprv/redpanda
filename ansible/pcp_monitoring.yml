@@ -1,0 +1,27 @@
+---
+- name: deploy-cluster
+  become: yes
+  hosts: redpanda
+  gather_facts: no
+  remote_user: fedora
+  tasks:
+    - name: install pcp and webapi
+      apt:
+        name: pcp,pcp-webapi
+        state: present
+    - name: enable pmcd
+      systemd:
+        state: enabled
+        name: pmcd
+    - name: enable pmcd
+      systemd:
+        state: enabled
+        name: pmwebd
+    - name: start pmcd
+      systemd:
+        state: started
+        name: pmcd
+    - name: start pmwebd
+      systemd:
+        state: started
+        name: pmwebd

@@ -1,0 +1,4 @@
+---
+- import_playbook: deps_debian.yml
+- import_playbook: patchelf.yml
+- import_playbook: config-coredump.yml

@@ -1,0 +1,16 @@
+---
+    - name: configure log limits
+      become: yes
+      hosts: redpanda
+      gather_facts: no
+      tasks:
+        - name: config log limit
+          lineinfile:
+            path: /etc/systemd/journald.conf
+            line: SystemMaxUse=200M
+        - name: restart systemd
+          systemd:
+            daemon_reload: yes
+        - name:
+          shell:
+            cmd: "journalctl --vacuum-size=200M" 

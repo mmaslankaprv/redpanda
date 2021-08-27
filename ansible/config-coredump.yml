@@ -1,0 +1,23 @@
+---
+    - name: coredump
+      gather_facts: no 
+      hosts: redpanda
+      become: yes
+      tasks:
+      - name: create core dir
+        file:
+          path: /var/lib/redpanda/coredump
+          state: directory
+          owner: redpanda
+          group: redpanda
+      - name: change core pattern
+        sysctl:
+          name: kernel.core_pattern
+          value: /var/lib/redpanda/coredump/core.%e.%p.%h.%t
+      - name: restart systemd
+        systemd:
+            daemon_reload: yes
+      - name: restart redpanda
+        systemd:
+            name: redpanda
+            state: restarted

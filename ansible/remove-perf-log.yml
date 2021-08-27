@@ -1,0 +1,16 @@
+---
+- name: remove-data
+  gather_facts: no
+  become: yes
+  hosts: redpanda
+  vars:
+    user: "{{hostvars[inventory_hostname].ansible_user}}"
+  tasks:
+  - name: remove producer log
+    file:
+      path: /home/{{user}}/producer.log
+      state: absent
+  - name: remove consumer log
+    file:
+      path: /home/{{user}}/consumer.log
+      state: absent

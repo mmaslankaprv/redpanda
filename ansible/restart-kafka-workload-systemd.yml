@@ -1,0 +1,20 @@
+---
+    - name: restart kafka producer
+      hosts: "{{ groups['redpanda'][1::2] }}"  
+      gather_facts: no
+      tasks:
+      - name: restart producer service
+        systemd:
+            state: restarted
+            name: kafka-producer
+    - name: restart kafka consumer
+      hosts: "{{ groups['redpanda'][::2] }}"  
+      gather_facts: no
+      tasks:
+      - name: restart consumer service
+        systemd:
+          state: restarted
+          name: kafka-consumer
+    
+    
+      

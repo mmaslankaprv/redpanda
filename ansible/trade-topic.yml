@@ -1,0 +1,20 @@
+---
+
+- name: kafka producer
+  gather_facts: no 
+  hosts: "{{ groups['redpanda'][1] }}"
+  vars:
+    user: "{{hostvars[inventory_hostname].ansible_user}}"
+    topic: 'trades'
+    partitions: 1024
+    rf: 3
+  tasks:
+  - name: create topic
+    become_user: "{{user}}"
+    shell:
+      cmd: | 
+          rpk api topic create\
+            {{topic}} \
+            -p {{partitions}} \
+            -r {{rf}} \
+            --compact

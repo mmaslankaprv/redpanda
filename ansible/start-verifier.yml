@@ -1,0 +1,131 @@
+---
+- name: deploy verifier 
+  become: yes
+  hosts: all
+  gather_facts: no
+  tasks:
+  - name: deploy deb
+    apt:
+      name: default-jdk
+      state: present
+  - name: copy jar
+    copy:
+      dest: /opt/verifier.jar
+      src: /home/mmaslanka/dev/redpanda/vbuild/java-build/compacted-log-verifier/kafka-compacted-topics-verifier.jar
+  - name: copy script
+    copy:
+      dest: /opt/verifier.sh
+      mode: 0755
+      content: |
+        #!/bin/bash
+        
+        tld=/opt
+        # topic name
+        TOPIC=${TOPIC:-zenly-test}
+        # topic replication factor
+        REPLICATION=${REPLICATION:-3}
+        # number of topic partitions
+        PARTITIONS=${PARTITIONS:-1024}
+        # topic segment size
+        SEGMENT_SIZE=${SEGMENT_SIZE:-$((64 * 1024 * 1024))}
+        # properties file containing security settings
+        SECURITY_PROPERTIES=${SECURITY_PROPERTIES:-}
+        COMPRESSION=${COMPRESSION:-none}
+
+        # brokers to connect to
+        SERVERS="{{groups['redpanda'] | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092"
+        # number of published records
+        RECORD_COUNT=${RECORD_COUNT:-91000000000}
+        # size of the record payload
+        PAYLOAD_SIZE=${PAYLOAD_SIZE:-4096}
+        # size of the record keys
+        KEY_SIZE=${KEY_SIZE:-16}
+        # number of distinct keys
+        KEY_SET_CARIDINALITY=${KEY_SET_CARIDINALITY:-10000000}
+        # produce acks settings
+        ACKS=${ACKS:-1}
+        # state file path
+        STATE_FILE=${STATE_FILE:-"${tld}/verifier.state"}
+
+        java_path=java
+        jar_path=${tld}/verifier.jar
+
+        cmd="${java_path} -jar ${jar_path} \
+            --topic ${TOPIC} \
+            --broker ${SERVERS} \
+            --state-file ${STATE_FILE}"
+
+        if [ -n "${SECURITY_PROPERTIES}" ]; then
+        cmd="${cmd} \
+                --security-properties=${SECURITY_PROPERTIES}"
+        fi
+
+
+        case $1 in
+        produce)
+        ${cmd} \
+            produce \
+            --num-records ${RECORD_COUNT} \
+            --replication-factor ${REPLICATION} \
+            --partitions ${PARTITIONS} \
+            --compression ${COMPRESSION} \
+            --segment-size ${SEGMENT_SIZE} \
+            --payload-size ${PAYLOAD_SIZE} \
+            --key-size ${KEY_SIZE} \
+            --producer-props acks=${ACKS} \
+            --key-cardinality ${KEY_SET_CARIDINALITY}
+        ;;
+        consume)
+        ${cmd} \
+            consume
+        ;;
+        *) echo "Usage: compacted_topic_verifier.sh <mode>" ;;
+
+        esac
+  - name: create systemd service
+    copy:
+      dest: /lib/systemd/system/verifier@.service
+      content: |
+        [Unit]
+        Description="Vectorized compacted topic verifier #%i"
+        PartOf=verifiers.target
+
+        [Service]
+        PermissionsStartOnly=true
+        Type=simple
+        Environment=TOPIC=z%i
+        Environment=PARTITIONS=500
+        Environment=SEGMENT_SIZE=268435456
+        Environment=PAYLOAD_SIZE=256
+        Environment=ACKS=-1
+        Environment=KEY_SET_CARIDINALITY=1000000
+        ExecStart=/opt/verifier.sh produce
+        TimeoutStartSec=900
+        TimeoutStopSec=11s
+        KillMode=mixed
+        Restart=always
+        User=root
+        OOMScoreAdjust=-950
+        StandardOutput=syslog
+        StandardError=syslog
+        SyslogLevelPrefix=false
+        AmbientCapabilities=CAP_SYS_NICE
+  - name: create multi-producers target
+    copy:
+        dest: /lib/systemd/system/verifiers.target
+        content: |
+          [Unit]
+          Description=Vectorized verifiers
+          After=redpanda.service
+          Requires=verifier@1.service verifier@2.service verifier@3.service
+          
+          [Install]
+          WantedBy=multi-user.target
+  - name: restart systemd
+    systemd:
+      daemon_reload: yes
+  - name: start verifier
+    systemd:
+      name: verifiers.target
+      state: restarted
+    

@@ -1,0 +1,12 @@
+---
+- name: remove-data
+  gather_facts: no
+  become: yes
+  hosts: redpanda
+  tasks:
+  - name: remove dir
+    file:
+      path: /var/lib/redpanda/data
+      state: absent
+  
+      

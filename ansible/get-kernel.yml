@@ -1,0 +1,13 @@
+---
+- name: get logs
+  gather_facts: no
+  become: yes
+  hosts: redpanda
+  remote_user: fedora
+  tasks:
+    - name: uname
+      shell:
+        cmd: "uname -v -a" 
+      register: out
+    - debug:
+        msg: "{{ out.stdout_lines }}"

@@ -1,0 +1,61 @@
+---
+- name: deploy-cluster
+  become: yes
+  hosts: redpanda
+  gather_facts: no
+  vars:
+    #  with cache
+    #sha1:  "0771bff"
+    #cache: sha1:  "fb6e0d7"
+    sha1:  "0000000"
+    # no cache
+    #sha1:  "1005474" 
+    compiler: "clang"
+    bt: "release"
+    dir: "redpanda"
+  tasks:
+    - name: copy debian
+      copy:
+        dest: /tmp/redpanda.deb
+        src: /home/mmaslanka/dev/{{dir}}/vbuild/{{bt}}/{{compiler}}/dist/debian/redpanda_0.0-dev-{{sha1}}_amd64.deb
+    - name: copy debug symbols
+      copy:
+        dest: /tmp/redpanda_dbgsym.deb
+        src: /home/mmaslanka/dev/{{dir}}/vbuild/{{bt}}/{{compiler}}/dist/debian/redpanda-dbgsym_0.0-dev-{{sha1}}_amd64.deb
+    # - name: restore cfg
+    #   shell:
+    #     cmd: cp /etc/redpanda/redpanda.yaml.ct /etc/redpanda/redpanda.yaml
+    - name: bamckup cfg
+      shell:
+        cmd: cp /etc/redpanda/redpanda.yaml /etc/redpanda/redpanda.yaml.ct
+    - name: remove old deb
+      apt:
+        name: redpanda
+        state: absent
+        purge: true   
+    - name: apt install new
+      apt:
+        deb:  /tmp/redpanda.deb
+    - name: apt install new dbgsym
+      apt:
+        deb:  /tmp/redpanda_dbgsym.deb
+    - name: restore cfg
+      shell:
+        cmd: cp /etc/redpanda/redpanda.yaml.ct /etc/redpanda/redpanda.yaml
+    - name: change core limit
+      lineinfile:
+        path: /lib/systemd/system/redpanda.service
+        insertafter: \[Service\]
+        line: LimitCORE=infinity
+    # - name: Disable restart
+    #   replace:
+    #     path: /lib/systemd/system/redpanda.service
+    #     regexp: 'Restart=on-abnormal'
+    #     replace: 'Restart=no'
+    - name: restart
+      systemd:
+        name: redpanda
+        state: restarted
+    - name: restart_sysd
+      systemd:
+        daemon_reload: yes

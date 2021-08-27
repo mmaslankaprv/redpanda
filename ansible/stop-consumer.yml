@@ -1,0 +1,12 @@
+---
+- name: stop kafka consumer
+  gather_facts: no
+  hosts: redpanda
+  tasks:
+  - name: stop consumer process
+    shell:
+      cmd: | 
+        jps | grep ConsumerPerformance | awk '{print $1}' | xargs kill -9
+
+
+  

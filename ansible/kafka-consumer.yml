@@ -1,0 +1,61 @@
+# This tool helps in performance test for the full zookeeper consumer
+# Option                                   Description
+# ------                                   -----------
+# --broker-list <String: host>             REQUIRED: The server(s) to connect to.
+# --consumer.config <String: config file>  Consumer config properties file.
+# --date-format <String: date format>      The date format to use for formatting
+#                                            the time field. See java.text.
+#                                            SimpleDateFormat for options.
+#                                            (default: yyyy-MM-dd HH:mm:ss:SSS)
+# --fetch-size <Integer: size>             The amount of data to fetch in a
+#                                            single request. (default: 1048576)
+# --from-latest                            If the consumer does not already have
+#                                            an established offset to consume
+#                                            from, start with the latest message
+#                                            present in the log rather than the
+#                                            earliest message.
+# --group <String: gid>                    The group id to consume on. (default:
+#                                            perf-consumer-55765)
+# --help                                   Print usage information.
+# --hide-header                            If set, skips printing the header for
+#                                            the stats
+# --messages <Long: count>                 REQUIRED: The number of messages to
+#                                            send or consume
+# --num-fetch-threads <Integer: count>     Number of fetcher threads. (default: 1)
+# --print-metrics                          Print out the metrics.
+# --reporting-interval <Integer:           Interval in milliseconds at which to
+#   interval_ms>                             print progress info. (default: 5000)
+# --show-detailed-stats                    If set, stats are reported for each
+#                                            reporting interval as configured by
+#                                            reporting-interval
+# --socket-buffer-size <Integer: size>     The size of the tcp RECV size.
+#                                            (default: 2097152)
+# --threads <Integer: count>               Number of processing threads.
+#                                            (default: 10)
+# --timeout [Long: milliseconds]           The maximum allowed time in
+#                                            milliseconds between returned
+#                                            records. (default: 10000)
+# --topic <String: topic>                  REQUIRED: The topic to consume from.
+# --version                                Display Kafka version.
+      
+---
+    - name: start kafka consumer
+      gather_facts: no
+      hosts: redpanda
+      vars:
+        user: "{{hostvars[inventory_hostname].ansible_user}}"
+        topic: 'sfo'
+        group: 'test-gr'
+      tasks:
+      - name: start consumer
+        become_user: "{{user}}"
+        shell:
+          cmd: |
+            nohup /opt/kafka-dev/bin/kafka-run-class.sh kafka.tools.ConsumerPerformance \
+            --broker-list "{{ansible_play_batch | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092" \
+            --topic "{{topic}}" \
+            --group "{{group}}" \
+            --show-detailed-stats \
+            --messages 2147483647000 \
+            --timeout 2147483647000 \
+            > consumer.log 2>&1 &

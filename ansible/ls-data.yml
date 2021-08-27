@@ -1,0 +1,9 @@
+---
+- name: ls-data
+  gather_facts: no
+  hosts: redpanda
+  tasks:
+  - name: build essential
+    apt:
+      
+

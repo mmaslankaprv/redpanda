@@ -1,0 +1,235 @@
+---
+  - name: Deploy kafka brokres
+    gather_facts: yes
+    hosts: redpanda
+    become: yes
+    tasks:
+    - name: stop redpanda
+      systemd:
+        name: redpanda
+        state: stopped
+    - name: install zookeeper
+      apt: 
+        name: zookeeper
+        update_cache: true
+        state: present
+    - name: remove zoo
+      file: 
+        path: /var/lib/zookeeper
+        state: absent
+    - name: add zoo
+      file: 
+        path: /var/lib/zookeeper
+        state: directory
+    - name: setup zookeeper
+      copy:
+        dest: /etc/zookeeper/conf/zoo.cfg
+        content: |
+            tickTime=2000
+            dataDir=/var/lib/zookeeper/
+            clientPort=2181
+            initLimit=5
+            syncLimit=2
+            {% for host in groups['redpanda'] %}
+            server.{{ hostvars[host].id }}={{ hostvars[host]['private_ip'] }}:{{ 2888 }}:{{ 3888 }}
+            {% endfor %}
+            autopurge.snapRetainCount=3
+            autopurge.purgeInterval=24
+    - name: zookeeper id
+      copy:
+         dest: /var/lib/zookeeper/myid
+         content: |
+            {{ hostvars[inventory_hostname].id }}
+    - name: stop zookeeper
+      shell:
+        cmd: /usr/share/zookeeper/bin/zkServer.sh stop
+    - name: start zookeeper
+      shell:
+        cmd: /usr/share/zookeeper/bin/zkServer.sh start
+
+    - name: install kafka binaries
+      unarchive:
+        src: 'https://s3-us-west-2.amazonaws.com/kafka-packages/kafka_2.13-2.8.0.tgz'
+        dest: /opt/
+        remote_src: yes
+        creates: /opt/kafka_2.13-2.6.0
+    - name: prometheus jmx agent
+      get_url:
+        url: https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/0.14.0/jmx_prometheus_javaagent-0.14.0.jar
+        dest: /opt/jmx_prometheus_javaagent-0.14.0.jar
+    - name: create prometheus exporter config
+      copy:
+        dest: /opt/prometheus-jmx.yml
+        content: |
+            lowercaseOutputName: true
+            rules:
+            - pattern : kafka.cluster<type=(.+), name=(.+), topic=(.+), partition=(.+)><>Value
+              name: kafka_cluster_$1_$2
+              labels:
+                topic: "$3"
+                partition: "$4"
+            - pattern : kafka.log<type=Log, name=(.+), topic=(.+), partition=(.+)><>Value
+              name: kafka_log_$1
+              labels:
+                topic: "$2"
+                partition: "$3"
+            - pattern : kafka.controller<type=(.+), name=(.+)><>(Count|Value)
+              name: kafka_controller_$1_$2
+            - pattern : kafka.network<type=(.+), name=(.+)><>Value
+              name: kafka_network_$1_$2
+            - pattern : kafka.network<type=(.+), name=(.+)PerSec, request=(.+)><>Count
+              name: kafka_network_$1_$2_total
+              labels:
+                request: "$3"
+            - pattern : kafka.network<type=(.+), name=(\w+), networkProcessor=(.+)><>Count
+              name: kafka_network_$1_$2
+              labels:
+                request: "$3"
+              type: COUNTER
+            - pattern : kafka.network<type=(.+), name=(\w+), request=(\w+)><>Count
+              name: kafka_network_$1_$2
+              labels:
+                request: "$3"
+            - pattern : kafka.network<type=(.+), name=(\w+)><>Count
+              name: kafka_network_$1_$2
+            - pattern : kafka.server<type=(.+), name=(.+)PerSec\w*, topic=(.+)><>Count
+              name: kafka_server_$1_$2_total
+              labels:
+                topic: "$3"
+            - pattern : kafka.server<type=(.+), name=(.+)PerSec\w*><>Count
+              name: kafka_server_$1_$2_total
+              type: COUNTER
+            
+            - pattern : kafka.server<type=(.+), name=(.+), clientId=(.+), topic=(.+), partition=(.*)><>(Count|Value)
+              name: kafka_server_$1_$2
+              labels:
+                clientId: "$3"
+                topic: "$4"
+                partition: "$5"
+            - pattern : kafka.server<type=(.+), name=(.+), topic=(.+), partition=(.*)><>(Count|Value)
+              name: kafka_server_$1_$2
+              labels:
+                topic: "$3"
+                partition: "$4"
+            - pattern : kafka.server<type=(.+), name=(.+), topic=(.+)><>(Count|Value)
+              name: kafka_server_$1_$2
+              labels:
+                topic: "$3"
+              type: COUNTER
+            
+            - pattern : kafka.server<type=(.+), name=(.+), clientId=(.+), brokerHost=(.+), brokerPort=(.+)><>(Count|Value)
+              name: kafka_server_$1_$2
+              labels:
+                clientId: "$3"
+                broker: "$4:$5"
+            - pattern : kafka.server<type=(.+), name=(.+), clientId=(.+)><>(Count|Value)
+              name: kafka_server_$1_$2
+              labels:
+                clientId: "$3"
+            - pattern : kafka.server<type=(.+), name=(.+)><>(Count|Value)
+              name: kafka_server_$1_$2
+            
+            - pattern : kafka.(\w+)<type=(.+), name=(.+)PerSec\w*><>Count
+              name: kafka_$1_$2_$3_total
+            - pattern : kafka.(\w+)<type=(.+), name=(.+)PerSec\w*, topic=(.+)><>Count
+              name: kafka_$1_$2_$3_total
+              labels:
+                topic: "$4"
+              type: COUNTER
+            - pattern : kafka.(\w+)<type=(.+), name=(.+)PerSec\w*, topic=(.+), partition=(.+)><>Count
+              name: kafka_$1_$2_$3_total
+              labels:
+                topic: "$4"
+                partition: "$5"
+              type: COUNTER
+            - pattern : kafka.(\w+)<type=(.+), name=(.+)><>(Count|Value)
+              name: kafka_$1_$2_$3_$4
+              type: COUNTER
+            - pattern : kafka.(\w+)<type=(.+), name=(.+), (\w+)=(.+)><>(Count|Value)
+              name: kafka_$1_$2_$3_$6
+              labels:
+                "$4": "$5"
+    - name: create kafka-dev symlink directory referenced in tests
+      file:
+        src: /opt/kafka_2.13-2.8.0
+        dest: /opt/kafka-dev
+        state: link
+    - name: create kafka data folder
+      file:
+        path: /var/lib/redpanda/kafka-data
+        owner: redpanda
+        group: redpanda
+        state: directory
+    - name: create kafka etc folder
+      file:
+          path: /etc/kafka
+          owner: root
+          group: root
+          state: directory
+    
+    - name: create server.properties
+      copy: 
+        dest: /etc/kafka/server.properties
+        content: |
+            broker.id={{ hostvars[inventory_hostname].id }}
+            num.network.threads=8
+            message.max.bytes=10485760
+            replica.fetch.max.bytes=10485760
+            log.segment.bytes=536870912
+            log.flush.interval.messages=1
+            log.retention.bytes=1073741824
+            socket.send.buffer.bytes=102400
+            socket.receive.buffer.bytes=102400
+            socket.request.max.bytes=104857600
+            log.dirs=/var/lib/redpanda/kafka-data
+            num.partitions=1
+            num.recovery.threads.per.data.dir=1
+            offsets.topic.replication.factor=1
+            transaction.state.log.replication.factor=1
+            transaction.state.log.min.isr=1
+            log.retention.hours=168
+            log.segment.bytes=1073741824
+            log.retention.check.interval.ms=300000
+            zookeeper.connect={{groups['redpanda'] | map('extract', hostvars, ['private_ip']) |join(':2181,')}}:2181
+            zookeeper.connection.timeout.ms=18000
+            group.initial.rebalance.delay.ms=0
+            listeners=EXTERNAL://0.0.0.0:9092
+            listener.security.protocol.map=EXTERNAL:PLAINTEXT
+            advertised.listeners=EXTERNAL://{{ hostvars[inventory_hostname].private_ip }}:9092
+            inter.broker.listener.name=EXTERNAL
+
+    - name: create kafka systemd service
+      copy:
+        dest: /lib/systemd/system/kafka.service
+        content: |
+            [Unit]
+            Description="Test Kafka Server"
+            Requires=local-fs.target network-online.target
+
+            [Service]
+            PermissionsStartOnly=true
+            Type=simple
+            Environment=JMX_PORT=9999
+            Environment="KAFKA_OPTS=-javaagent:/opt/jmx_prometheus_javaagent-0.14.0.jar=7100:/opt/prometheus-jmx.yml"
+            Environment="KAFKA_JMX_OPTS=-Dcom.sun.management.jmxremote=true -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Djava.rmi.server.hostname=prod-kafka-001 -Djava.net.preferIPv4Stack=true"
+            Environment='KAFKA_HEAP_OPTS=-Xms6g -Xmx6g -XX:MetaspaceSize=96m'
+            Environment='KAFKA_JVM_PERFORMANCE_OPTS=-server -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35 -XX:G1HeapRegionSize=16M -XX:MinMetaspaceFreeRatio=50 -XX:MaxMetaspaceFreeRatio=80 -Djava.awt.headless=true'
+            ExecStart=/opt/kafka-dev/bin/kafka-server-start.sh /etc/kafka/server.properties
+            TimeoutStartSec=900
+            TimeoutStopSec=11s
+            KillMode=process
+            Restart=always
+            User=root
+            OOMScoreAdjust=-950
+            StandardOutput=syslog
+            StandardError=syslog
+            SyslogLevelPrefix=false
+            AmbientCapabilities=CAP_SYS_NICE
+    - name: restart systemd
+      systemd:
+        daemon_reload: yes
+    - name: start kafka
+      systemd:
+        name: kafka
+        enabled: true
+        state: restarted

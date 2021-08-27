@@ -1,0 +1,26 @@
+---
+- name: install-big-connections
+  become: yes
+  hosts: all
+  gather_facts: no
+  tasks:
+    - name: 
+      apt:
+        name: golang-go
+        state: present
+        update_cache: true
+    - name: clone 
+      ansible.builtin.git:
+        repo: 'https://github.com/dotnwat/big-kafka-conn.git'
+        dest: /home/ubuntu/big-kafka-conn
+    - name: start script
+      copy:
+        dest: /home/ubuntu/big-kafka-conn/start.sh
+        mode: 0755
+        content: |
+          ./big-kafka-conn -brokers "{{ansible_play_batch | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092" \
+                             -max-batch-size 3000000 \
+                             -record-size 2096 \
+                             -topic test \
+                             -num-clients 300
+

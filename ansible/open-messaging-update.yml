@@ -1,0 +1,13 @@
+---
+  - name: Deploy open messaging benchmark
+    gather_facts: no
+    hosts: all
+    tasks:
+    - name: deploy benchmark
+      unarchive:
+        src: /home/mmaslanka/dev/openmessaging-benchmark/package/target/openmessaging-benchmark-0.0.1-SNAPSHOT-bin.tar.gz
+        dest: /opt/
+    - name: update libraries
+      shell:
+        cmd: rm -rf /opt/benchmark && mv /opt/openmessaging-benchmark-0.0.1-SNAPSHOT /opt/benchmark
+    

@@ -1,0 +1,130 @@
+---
+
+- name: kafka producer
+  gather_facts: no 
+  #hosts: "{{ groups['redpanda'][1::2] }}"
+  hosts: redpanda
+  vars:
+    user: "{{hostvars[inventory_hostname].ansible_user}}"
+    record_size: 1024
+    topic: 'sfo'
+    partitions: 36
+    rf: 3
+    record_count: 2147483647000
+    throughput:  65535
+    #throughput: 32000
+    acks: 1
+    batch_size: 81960
+    buf_mem: 1048576
+    producers_per_host: 3
+  tasks:
+  - name: create topic
+    become_user: "{{user}}"
+    shell:
+      cmd: | 
+            /home/{{user}}/bin/kaf topic create --cluster local \
+            {{topic}} \
+            -p {{partitions}} \
+            -r {{rf}}
+  - name: create producer service
+    copy:
+      dest: /lib/systemd/system/kafka-producer@.service
+      content: |
+        [Unit]
+        Description="Kafka producer #%i"
+        
+        [Service]
+        PermissionsStartOnly=true
+        Type=simple
+        ExecStart=/opt/kafka-dev/bin/kafka-run-class.sh org.apache.kafka.tools.ProducerPerformance \
+                        --record-size "{{record_size}}" \
+                        --topic "{{topic}}" \
+                        --num-records "{{record_count}}" \
+                        --throughput "{{ throughput }}" \
+                        --producer-props "acks={{acks}}" \
+                        bootstrap.servers="{{ansible_play_batch | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092" \
+                        batch.size={{batch_size}} \
+                        buffer.memory={{buf_mem}}
+        TimeoutStartSec=900
+        TimeoutStopSec=11s
+        KillMode=process
+        Restart=always
+        User=redpanda
+        OOMScoreAdjust=-950
+        StandardOutput=syslog
+        StandardError=syslog
+        SyslogLevelPrefix=false
+        AmbientCapabilities=CAP_SYS_NICE
+        PartOf=kafka-producers.target
+
+  - name: create multi-producers target
+    copy:
+        dest: /lib/systemd/system/kafka-producers.target
+        content: |
+          [Unit]
+          Description=Kafka producers
+          After=redpanda.service
+          Requires=kafka-producer@{{item}}.service
+          
+          [Install]
+          WantedBy=multi-user.target
+    with_sequence: count={{producers_per_host}}
+           
+  - name: restart systemd
+    systemd:
+      daemon_reload: yes
+  - name: start producer
+    systemd:
+      name: kafka-producers.target
+      enabled: true
+      state: started
+    
+- name: consumer
+  hosts: "{{ groups['redpanda'][::2] }}"  
+  gather_facts: no
+  vars:
+    user: "{{hostvars[inventory_hostname].ansible_user}}"
+    topic: 'sfo'
+    record_count: 9223372036854775800
+    consumer_group: 'test-group-2'
+  tasks:
+  - name: create consumer service
+    copy:
+      dest: /lib/systemd/system/kafka-consumer.service
+      content: |
+        [Unit]
+        Description=Kafka consumer
+        After=redpanda.service
+        Requires=local-fs.target network-online.target
+        
+        [Service]
+        PermissionsStartOnly=true
+        Type=simple
+        ExecStart=/opt/kafka-dev/bin/kafka-run-class.sh kafka.tools.ConsumerPerformance \
+            --broker-list "{{ansible_play_batch | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092" \
+            --topic "{{topic}}" \
+            --group "{{consumer_group}}" \
+            --show-detailed-stats \
+            --messages {{record_count}} \
+            --timeout 2147483647000
+        TimeoutStartSec=900
+        TimeoutStopSec=11s
+        KillMode=process
+        Restart=always
+        User=redpanda
+        OOMScoreAdjust=-950
+        StandardOutput=syslog
+        StandardError=syslog
+        SyslogLevelPrefix=false
+        AmbientCapabilities=CAP_SYS_NICE
+        
+        [Install]
+        WantedBy=multi-user.target
+  - name: restart systemd
+    systemd:
+      daemon_reload: yes
+  - name: start consumer
+    systemd:
+      name: kafka-consumer
+      enabled: true
+      state: stopped

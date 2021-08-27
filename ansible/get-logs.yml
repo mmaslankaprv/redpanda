@@ -1,0 +1,17 @@
+---
+- name: get logs
+  gather_facts: no
+  become: yes
+  hosts: redpanda
+  vars:
+    target: logs
+    date: "2021-08-27 09:58:00"
+  tasks:
+    - name: create tmp file
+      shell:
+        cmd: journalctl -o cat -u redpanda --since "{{date}}" > /tmp/redpanda.log
+    - name: download log
+      fetch:
+        src: /tmp/redpanda.log
+        flat: true
+        dest: ./{{target}}/{{inventory_hostname}}/redpanda.log

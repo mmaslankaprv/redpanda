@@ -1,0 +1,12 @@
+---
+- name: ls-data
+  gather_facts: no
+  hosts: redpanda
+  remote_user: fedora
+  tasks:
+  - name: cat config
+    shell:
+      cmd: "cat /etc/redpanda/redpanda.yaml" 
+    register: out
+  - debug:
+      msg: "{{ out.stdout_lines }}"

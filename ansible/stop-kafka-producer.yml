@@ -1,0 +1,10 @@
+---
+    - name: stop kafka producer
+      gather_facts: no
+      hosts: all
+      tasks:
+      - name: stop producers
+        systemd:
+            name: kafka-producers.target
+            enabled: false
+            state: stopped

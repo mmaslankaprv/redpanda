@@ -1,0 +1,9 @@
+---
+- name: ls-data
+  gather_facts: no
+  hosts: redpanda
+  remote_user: fedora
+  tasks:
+  - name: restart systemd
+    systemd:
+      daemon_reload: yes

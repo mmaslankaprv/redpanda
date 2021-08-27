@@ -1,0 +1,15 @@
+---
+
+- name: patch redpanda binary
+  gather_facts: no 
+  hosts: redpanda
+  become: true
+  tasks:
+  - name: update
+    apt:
+      name: gdb
+      state: present
+  - name: libthreaddb
+    copy:
+      src: /lib64/libthread_db-1.0.so
+      dest:  /opt/redpanda/lib/libthread_db.so

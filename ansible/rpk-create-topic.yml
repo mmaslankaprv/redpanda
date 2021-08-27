@@ -1,0 +1,19 @@
+---
+
+- name: rpk create topic
+  gather_facts: no 
+  hosts: redpanda
+  vars:
+    user: "{{hostvars[inventory_hostname].ansible_user}}"
+    topic: 'sfo'
+    partitions: 6
+    rf: 3
+  tasks:
+  - name: create topic
+    become_user: "{{user}}"
+    shell:
+      cmd: | 
+          rpk api topic create \
+            {{topic}}-{{hostvars[inventory_hostname].id}} \
+            -p {{partitions}} \
+            -r {{rf}}

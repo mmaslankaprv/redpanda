@@ -1,0 +1,12 @@
+---
+    - name: Stop kafka brokres
+      gather_facts: no
+      hosts: redpanda
+      become: yes
+      tasks:
+      - name: stop kafka
+        systemd:
+          name: kafka
+          enabled: false
+          state: stopped
+  

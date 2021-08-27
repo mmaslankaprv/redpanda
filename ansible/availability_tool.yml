@@ -1,0 +1,52 @@
+---
+- name: aw_tool
+  become: yes
+  hosts: monitor
+  gather_facts: no
+  vars:
+    topic: av-test
+  tasks:
+    - name: copy script
+      copy:
+        dest: /home/ubuntu/availability_logger.py 
+        src: /home/mmaslanka/dev/v/src/consistency-testing/kafka-availability/availability_logger.py
+    - name: deps
+      apt:
+        name: python3-pip,kafkacat,gnuplot,python3
+        state: present
+    - name: create topic script
+      copy:
+        dest: /home/ubuntu/create-topic.py
+        mode: '1775'
+        content: |
+            from kafka.admin import KafkaAdminClient, NewTopic
+
+
+            admin_client = KafkaAdminClient(
+                bootstrap_servers="{{groups['redpanda'] | map('extract', hostvars, ['private_ip']) | join(':9092, ')}}:9092", 
+                client_id='test'
+            )
+            
+            topic_list = []
+            topic_list.append(NewTopic(name="{{ topic }}", num_partitions=1, replication_factor=3))
+            admin_client.create_topics(new_topics=topic_list, validate_only=False)
+    - name: create topic script
+      copy:
+        dest: /home/ubuntu/list-topics.py
+        mode: '1775'
+        content: |
+          kafkacat -b "{{groups['redpanda'] | map('extract', hostvars, ['private_ip']) | join(':9092, ')}}:9092" -L
+                      
+    - name: create start script
+      copy:
+        dest: /home/ubuntu/availability-test.sh
+        mode: '1755'
+        content: |
+            #!/bin/bash
+            python3 /home/ubuntu/create-topic.py
+
+            python3 /home/ubuntu/availability_logger.py \
+                --topic {{ topic }} \
+                --broker {{groups['redpanda'] | map('extract', hostvars, ['private_ip']) | join(':9092 --broker ')}}:9092
+
+    

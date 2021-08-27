@@ -1,0 +1,34 @@
+---
+- name: setup punisher
+  gather_facts: no
+  hosts: all
+  vars: 
+    inventory: /home/mmaslanka/dev/clusters/aws-3-nodes/hosts.ini
+    key: /home/mmaslanka/.ssh/7_nodes_aws
+  tasks:
+  - name: install dependencies
+    apt:
+      name: python3-pip,python3-venv
+      state: present
+  - name: install venv
+    shell:
+      cmd: pip3 install virtualenvwrapper
+  - name: copy punisher
+    copy:
+      dest: /opt
+      src: /home/mmaslanka/dev/punisher
+  - name: make venv
+    shell:
+      cmd: python3 -mvenv /opt/punisher-venv
+  - name: install punisher
+    shell: 
+      cmd: |
+        bash -c 'source /opt/punisher-venv/bin/activate && pip3 install /opt/punisher'
+  - name: copy inventory
+    copy:
+      dest: /opt/punisher-venv/hosts.ini
+      src: "{{inventory}}"
+  - name: copy key
+    copy:
+      dest: /opt/punisher-venv/key
+      src: "{{key}}"

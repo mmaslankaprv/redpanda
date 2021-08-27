@@ -1,0 +1,17 @@
+---
+- name: get logs
+  gather_facts: no
+  become: yes
+  hosts: client
+  vars:
+    target: bench-logs
+    date: "2021-01-12 09:40:00"
+  tasks:
+    - name: create tmp file
+      shell:
+        cmd: journalctl -o cat -u benchmark-worker --since "{{date}}" > /tmp/benchmark.log
+    - name: download log
+      fetch:
+        src: /tmp/benchmark.log
+        flat: true
+        dest: ./{{target}}/{{inventory_hostname}}/benchmark.log

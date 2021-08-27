@@ -1,0 +1,12 @@
+---
+- name: kill all
+  gather_facts: no
+  hosts: redpanda
+  become: yes
+  tasks:
+  - name: kill all redpanda
+    shell:
+      cmd: "killall -9 redpanda" 
+    register: out
+  - debug:
+      msg: "{{ out.stdout_lines }}"

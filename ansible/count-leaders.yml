@@ -1,0 +1,20 @@
+---
+    - name: count topic leaders
+      gather_facts: no
+      hosts: all
+      vars:
+        user: "{{hostvars[inventory_hostname].ansible_user}}"
+      tasks:
+      - name: count topic leaders
+        become_user: "{{user}}"
+        shell:
+          cmd: |
+            kafkacat -L -b \
+            "{{ansible_play_batch | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092" \
+            | grep isrs \
+            | awk '{print substr($4, 1, length($4)-1)}' \
+            | awk '{a[$1] += 1} {a["all"] +=1} END{for (i in a) print i, a[i]}'
+            
+        register: out
+      - debug:
+          msg: "{{ out.stdout_lines }}"

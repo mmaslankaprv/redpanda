@@ -1,0 +1,23 @@
+---
+- name: setup zenly topics
+  gather_facts: no 
+  hosts: "{{ groups['redpanda'][1] }}"
+  vars:
+    user: "{{hostvars[inventory_hostname].ansible_user}}"
+    partitions: 1024
+    rf: 3
+  tasks:
+  - name: create topic
+    become_user: "{{user}}"
+    shell:
+      cmd: | 
+          rpk api topic create\
+            {{item}} \
+            -p {{partitions}} \
+            -r {{rf}} \
+            --compact
+    loop:
+        zenly-1
+        zenly-2
+        zenly-3
+        zenly-4

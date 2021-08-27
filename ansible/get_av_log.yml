@@ -1,0 +1,21 @@
+---
+- name: get-aw-tool-log
+  become: yes
+  hosts: monitor
+  gather_facts: no
+  vars:
+    topic: av-test
+  tasks:
+    - name: grep
+      shell:
+        cmd: cat /home/ubuntu/lat.log | grep ok > /home/ubuntu/lat-ok.log
+    - name: download
+      fetch:
+        src: /home/ubuntu/lat-ok.log
+        flat: true
+        dest: /home/mmaslanka/dev/v/src/consistency-testing/kafka-availability/lat-ok.log
+    - name: download
+      fetch:
+          src: /home/ubuntu/1s.log
+          flat: true
+          dest: /home/mmaslanka/dev/v/src/consistency-testing/kafka-availability/1s.log

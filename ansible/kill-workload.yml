@@ -1,0 +1,11 @@
+---
+    - name: stop java
+      hosts: all
+      gather_facts: no
+      become: yes
+      tasks:
+      - name: stop java
+        shell:
+          cmd: | 
+            killall -9 java
+      

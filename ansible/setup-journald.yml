@@ -1,0 +1,16 @@
+---
+- name: Configure journald
+  gather_facts: no
+  become: yes
+  hosts: all
+  tasks:
+  - name: change-config-file
+    lineinfile:
+      path: /etc/systemd/journald.conf
+      state: present
+      line: RateLimitBurst=0
+  - name: restart
+    systemd:
+       name: systemd-journald
+       state: restarted
+ 

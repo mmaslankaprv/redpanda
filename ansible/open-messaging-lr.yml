@@ -1,0 +1,96 @@
+---
+  - name: Deploy open messaging benchmark
+    gather_facts: no
+    hosts: all
+    tasks:
+    - name: create results folder
+      file: 
+        dest: /opt/benchmark/results
+        state: directory
+    - name: driver settings
+      copy:
+        dest: /opt/benchmark/driver-redpanda/redpanda-lr.yaml
+        content: |2
+          name: Redpanda
+          driverClass: io.openmessaging.benchmark.driver.redpanda.RedpandaBenchmarkDriver
+          replicationFactor: 3
+          reset: true
+
+          topicConfig: |
+            cleanup.policy: compact
+          commonConfig: |
+            bootstrap.servers=localhost:9092
+            request.timeout.ms=120000
+          producerConfig: |
+            acks=all
+            linger.ms=1
+            batch.size=131072
+            compression.type=zstd
+
+          consumerConfig: |
+            group.id=long-running-group
+            auto.offset.reset=earliest
+            enable.auto.commit=false
+            max.partition.fetch.bytes=131072
+
+    - name: start script
+      copy: 
+        mode: 0755
+        dest: /opt/benchmark/benchmark-redpanda.sh
+        content: |
+           #!/bin/bash
+
+           workload=$1
+           tld=/opt/benchmark
+           cd ${tld}
+           
+           ${tld}/bin/benchmark -d ${tld}/driver-redpanda/redpanda-lr.yaml \
+           ${tld}/workloads/${workload}.yaml \
+           -o ${tld}/results/redpanda-${workload}.json  
+  
+    - name: create workload
+      copy: 
+        dest: /opt/benchmark/workloads/tester.yaml
+        content: |
+          name: Testing benchmark
+          topics: 1
+          partitionsPerTopic: 64
+          messageSize: 1024
+          payloadFile: "payload/payload-1Kb.data"
+          subscriptionsPerTopic: 1
+          consumerPerSubscription: 1
+          producersPerTopic: 2
+          producerRate: 80000
+          consumerBacklogSizeGB: 0
+          keyDistributor: RANDOM_NANO
+          testDurationMinutes: 86400
+    - name: create systemd service
+      copy:
+        dest: /lib/systemd/system/om.service
+        content: |
+          [Unit]
+          Description="Open messaging benchmark"
+          Requires=local-fs.target network-online.target
+
+          [Service]
+          PermissionsStartOnly=true
+          Type=simple
+          ExecStart=/opt/benchmark/benchmark-redpanda.sh tester
+          TimeoutStartSec=900
+          TimeoutStopSec=11s
+          KillMode=mixed
+          Restart=always
+          User=root
+          OOMScoreAdjust=-950
+          StandardOutput=syslog
+          StandardError=syslog
+          SyslogLevelPrefix=false
+          AmbientCapabilities=CAP_SYS_NICE
+    - name: restart systemd
+      systemd:
+        daemon_reload: yes
+    # - name: start
+    #   systemd:
+    #     name: om.service
+    #     enabled: true
+    #     state: restarted

@@ -1,0 +1,19 @@
+---
+- name: tune all
+  gather_facts: no
+  become: yes
+  hosts: redpanda
+  remote_user: fedora
+  tasks:
+    # - name: rpk kill
+    #   shell:
+    #     cmd: killall -9 rpk
+    - name: rpk tune
+      shell:
+        cmd: /opt/redpanda/libexec/rpk.bin tune disk_nomerges,net,aio_events,clocksource,disk_irq,disk_scheduler,cpu,swappiness,coredump -v
+      register: rpk_out
+    - debug:
+        msg: "{{ rpk_out }}"
+    - name: enable cpu
+      shell:
+        cmd: echo 1 > /sys/devices/system/cpu/cpu1/online

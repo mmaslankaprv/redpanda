@@ -84,7 +84,6 @@ consensus::consensus(
     setup_metrics();
     update_follower_stats(_configuration_manager.get_latest());
     _vote_timeout.set_callback([this] {
-        vlog(raftlog.info, "DBG: pending in buffer: {}", pending_in_buffer);
         maybe_step_down();
         dispatch_vote(false);
     });

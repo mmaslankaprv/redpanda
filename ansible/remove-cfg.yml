@@ -1,0 +1,14 @@
+---
+  - name: remove redpanda configuration
+    gather_facts: no
+    hosts: redpanda
+    become: yes
+    tasks:
+    - name: remove configuration
+      file:
+        path: /etc/redpanda
+        state: directory
+        owner: redpanda
+        group: redpanda
+        recurse: yes
+    

@@ -1,0 +1,13 @@
+---
+    - name: get logs
+      gather_facts: no
+      become: yes
+      hosts: redpanda
+      remote_user: fedora
+      tasks:
+        - name: query status
+          shell:
+            cmd: "rpk status" 
+          register: out
+        - debug:
+            msg: "{{ out.stdout_lines }}"

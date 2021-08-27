@@ -1,0 +1,16 @@
+---
+- name: install utilities 
+  become: yes
+  hosts: redpanda
+  roles:
+    - cloudalchemy.node-exporter
+  tasks:
+    - name: apt install deps
+      apt:
+        name: iotop,sysstat,psmisc,telnet,htop,iftop,kafkacat,fio, gdb,net-tools
+        state: present
+    # - name: apt upgrade
+    #   apt:
+    #     upgrade: yes
+    # - name: reboot
+    #   reboot:

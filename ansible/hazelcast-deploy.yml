@@ -1,0 +1,55 @@
+---
+- name: deploy hazelcast benchmark
+  become: yes
+  hosts: all
+  gather_facts: no
+  tasks:
+  - name: folder
+    file:
+      path: /opt/hazelcast
+      owner: ubuntu
+      group: ubuntu
+      state: directory
+  - name: copy jar
+    copy:
+      dest: /opt/hazelcast/kafka-trade-producer-1.0-SNAPSHOT.jar
+      src: /home/mmaslanka/dev/big-data-benchmark/trade-monitor/kafka-trade-producer/target/kafka-trade-producer-1.0-SNAPSHOT.jar
+  - name: producer script
+    copy:
+      dest: /opt/hazelcast/start-producer.sh
+      mode: 0755
+      content: |
+        java -cp /opt/hazelcast/kafka-trade-producer-1.0-SNAPSHOT.jar \
+        com.hazelcast.jet.benchmark.trademonitor.KafkaTradeProducer \
+        /opt/hazelcast/kafka-trade-producer.properties
+  - name: consumer script
+    copy:
+      dest: /opt/hazelcast/start-consumer.sh
+      mode: 0755
+      content: |
+         java -cp /opt/hazelcast/kafka-trade-producer-1.0-SNAPSHOT.jar \
+         com.hazelcast.jet.benchmark.trademonitor.KafkaConsumerBenchmark \
+         /opt/hazelcast/kafka-consumer-benchmark.properties
+  - name: producer properties
+    copy:
+      dest: /opt/hazelcast/kafka-trade-producer.properties
+      mode: 0644
+      content: |
+        kafka-broker-uri={{groups['redpanda'] | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092
+        num-parallel-producers=4
+        trades-per-second=20_000
+        num-distinct-keys=10_000
+        debug-mode=false
+      
+  - name: consumer properties
+    copy:
+      dest: /opt/hazelcast/kafka-consumer-benchmark.properties
+      mode: 0644
+      content: |
+        kafka-broker-uri={{groups['redpanda'] | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092
+        partition-count=8
+        warmup-seconds=40
+        measurement-seconds=240
+        latency-reporting-threshold-millis=10
+        latency-histogram-file=/opt/hazelcast/latency.hist
+      

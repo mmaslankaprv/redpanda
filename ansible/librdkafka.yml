@@ -1,0 +1,30 @@
+---
+- name: install librdkafka
+  gather_facts: no
+  hosts: all
+  tasks:
+  - name: install build-essential,zlib-dev,libssl-dev,libsasl2-dev,libzstd-dev
+    apt:
+     name: build-essential
+     state: present
+  - name: clone librdkafka repo
+    ansible.builtin.git:
+      repo: https://github.com/edenhill/librdkafka.git
+      dest: /opt/librdkafka
+  - name: configure librdkafka
+    shell:
+      cmd: "cd /opt/librdkafka && ./configure --install-deps" 
+  - name: build librdkafka
+    shell:
+      cmd: "cd /opt/librdkafka && make" 
+  - name: create start script
+    copy: 
+        dest: /opt/librdkafka/start-perf.sh
+        mode: 0755
+        content: |
+          #!/bin/bash
+
+          exec=/opt/librdkafka/examples/rdkafka_performance
+          brokers="{{groups['redpanda'] | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092"
+
+          $exec $1 -b ${brokers} ${@:2}

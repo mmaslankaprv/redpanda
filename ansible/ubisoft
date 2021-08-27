@@ -1,0 +1,29 @@
+
+-Xclient.id=$(hostname) \
+-Xsocket.keepalive.enable=true \
+-Xtopic.metadata.refresh.interval.ms=120000 \
+-Xcompression.type=lz4 \
+-Xsocket.send.buffer.bytes=16777216 \
+-Xsocket.receive.buffer.bytes=16777216 \
+
+-Xacks=1 \
+-Xmax.in.flight.requests.per.connection=5 \
+-Xbatch.size=15728640 \
+-Xqueue.buffering.max.kbytes=5000000 \
+-Xqueue.buffering.max.ms=30 \
+-Xmessage.timeout.ms=0 \
+-Xsticky.partitioning.linger.ms=400 \
+
+
+
+-Xgroup.id=gid \
+-Xgroup.instance.id=$(hostname) \
+-Xclient.id=$(hostname) \
+-Xenable.auto.commit=false \
+-Xsocket.keepalive.enable=true \
+-Xsocket.send.buffer.bytes=16777216 \
+-Xsocket.receive.buffer.bytes=16777216 \
+-Xsession.timeout.ms=120000 \
+-Xmax.partition.fetch.bytes=10485760 \
+-Xfetch.max.bytes=209715200" \
+-Xpartition.assignment.strategy=range,roundrobin

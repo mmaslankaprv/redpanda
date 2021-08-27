@@ -1,0 +1,27 @@
+---
+- name: change redpanda configuration
+  gather_facts: no
+  become: yes
+  hosts: redpanda
+  remote_user: fedora
+  tasks:
+  - name: remove
+    ansible.builtin.lineinfile:
+      path: /etc/redpanda/redpanda.yaml
+      regexp: 'raft_heartbeat_disconnect_failures: .*'
+      state: absent
+  - name: change-config-file
+    blockinfile:
+      path: /etc/redpanda/redpanda.yaml
+      insertafter: "redpanda:"
+      marker: "# {mark} REDPANDA PARAMS BLOCK"
+      block: |2
+          raft_heartbeat_disconnect_failures: 0
+          enable_leader_balancer: false
+          
+  - name: start redpanda
+    systemd:
+        state: restarted
+        name: redpanda
+
+          

@@ -1,0 +1,10 @@
+---
+- name: change redpanda configuration
+  gather_facts: no
+  become: yes
+  hosts: redpanda
+  tasks:
+  - name: chown
+    shell:
+      cmd: chown redpanda:redpanda -R /etc/redpanda
+        

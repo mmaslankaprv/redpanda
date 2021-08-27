@@ -1,0 +1,22 @@
+---
+    - name: partition_single_node
+      gather_facts: no 
+      hosts: redpanda
+      become: yes
+      vars:
+        state: present
+      tasks:
+      - name: "isolate node input from: {{ item }}"
+        iptables:
+           chain: INPUT
+           source: "{{ item }}"
+           jump: DROP
+           state: "{{state}}" 
+        with_items: "{{ groups['redpanda'] | reject('equalto', inventory_hostname ) | map('extract', hostvars, ['private_ip']) | list }}"
+      - name: "isolate node output to: {{ item }}"
+        iptables:
+           chain: OUTPUT
+           destination: "{{ item }}"
+           jump: DROP 
+           state: "{{state}}"
+        with_items: "{{ groups['redpanda'] | reject('equalto', inventory_hostname ) | map('extract', hostvars, ['private_ip']) | list }}"

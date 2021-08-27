@@ -1,0 +1,93 @@
+---
+- name: deploy verifier 
+  become: yes
+  hosts: all
+  gather_facts: no
+  tasks:
+  - name: install librdkafka
+    apt:
+      name: librdkafka-dev
+      state: present
+  - name: copy script
+    copy:
+      dest: /opt/producer.sh
+      mode: 0755
+      content: |
+        #!/bin/bash
+        
+        tld=/opt
+        # topic name
+        TOPIC=${TOPIC:-zenly-test}
+        # topic replication factor
+        REPLICATION=${REPLICATION:-3}
+        # number of topic partitions
+        PARTITIONS=${PARTITIONS:-1024}
+        # topic segment size
+        SEGMENT_SIZE=${SEGMENT_SIZE:-$((64 * 1024 * 1024))}
+        # properties file containing security settings
+        SECURITY_PROPERTIES=${SECURITY_PROPERTIES:-}
+        COMPRESSION=${COMPRESSION:-none}
+
+        # brokers to connect to
+        SERVERS="{{groups['redpanda'] | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092"
+        # number of published records
+        RECORD_COUNT=${RECORD_COUNT:-91000000000}
+        # size of the record payload
+        PAYLOAD_SIZE=${PAYLOAD_SIZE:-4096}
+        # size of the record keys
+        KEY_SIZE=${KEY_SIZE:-16}
+        # number of distinct keys
+        KEY_SET_CARIDINALITY=${KEY_SET_CARIDINALITY:-10000000}
+        # produce acks settings
+        ACKS=${ACKS:-1}
+        
+        
+
+
+
+  - name: create systemd service
+    copy:
+      dest: /lib/systemd/system/verifier@.service
+      content: |
+        [Unit]
+        Description="Vectorized compacted topic verifier #%i"
+        PartOf=verifiers.target
+
+        [Service]
+        PermissionsStartOnly=true
+        Type=simple
+        Environment=TOPIC=z%i
+        Environment=PARTITIONS=16
+        Environment=SEGMENT_SIZE=536870912
+        Environment=PAYLOAD_SIZE=256
+        Environment=ACKS=1
+        ExecStart=/opt/verifier.sh produce
+        TimeoutStartSec=900
+        TimeoutStopSec=11s
+        KillMode=mixed
+        Restart=always
+        User=root
+        OOMScoreAdjust=-950
+        StandardOutput=syslog
+        StandardError=syslog
+        SyslogLevelPrefix=false
+        AmbientCapabilities=CAP_SYS_NICE
+  - name: create multi-producers target
+    copy:
+        dest: /lib/systemd/system/verifiers.target
+        content: |
+          [Unit]
+          Description=Vectorized verifiers
+          After=redpanda.service
+          Requires=verifier@1.service verifier@2.service verifier@3.service verifier@4.service
+          
+          [Install]
+          WantedBy=multi-user.target
+  - name: restart systemd
+    systemd:
+      daemon_reload: yes
+  - name: start verifier
+    systemd:
+      name: verifiers.target
+      state: restarted
+    

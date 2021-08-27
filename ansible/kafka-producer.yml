@@ -1,0 +1,41 @@
+---
+- name: start kafka producer
+  gather_facts: no
+  hosts: redpanda
+  vars:
+    user: "{{hostvars[inventory_hostname].ansible_user}}"
+    record_size: 1024
+    topic: 'sfo'
+    partitions: 36
+    rf: 3
+    record_count: 2147483647000
+    throughput:  40000
+    #throughput: 32000
+    acks: 1
+    batch_size: 81960
+    buf_mem: 1048576
+  tasks:
+  - name: create topic
+    become_user: "{{user}}"
+    shell:
+      cmd: | 
+       /home/{{user}}/bin/kaf topic create --cluster local \
+       {{topic}} \
+       -p {{partitions}} \
+       -r {{rf}}
+  - name: start producer
+    become_user: "{{user}}"
+    shell:
+      cmd: |
+        nohup /opt/kafka-dev/bin/kafka-run-class.sh org.apache.kafka.tools.ProducerPerformance \
+        --record-size "{{record_size}}" \
+        --topic "{{topic}}" \
+        --num-records "{{record_count}}" \
+        --throughput "{{ throughput }}" \
+        --producer-props "acks={{acks}}" \
+        bootstrap.servers="{{ansible_play_batch | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092" \
+        batch.size={{batch_size}} \
+        buffer.memory={{buf_mem}} > ${HOME}/producer.log 2>&1 &
+
+
+  

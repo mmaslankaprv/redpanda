@@ -1,0 +1,26 @@
+---
+- name: add-trace
+  gather_facts: no
+  become: yes
+  hosts: redpanda
+  remote_user: fedora
+  tasks:
+  - name: remove
+    ansible.builtin.lineinfile:
+      path: /etc/redpanda/redpanda.yaml
+      regexp: '- --abort-on-seastar-bad-alloc.*'
+      state: absent
+  - name: change-config-file
+    blockinfile:
+      path: /etc/redpanda/redpanda.yaml
+      state: present
+      insertafter: "rpk:"
+      block: |2
+          additional_start_flags:
+            - --abort-on-seastar-bad-alloc
+            - --default-log-level=debug
+            - --dump-memory-diagnostics-on-alloc-failure-kind=all
+  - name: restart
+    systemd:
+        name: redpanda
+        state: restarted

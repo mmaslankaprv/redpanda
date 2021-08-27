@@ -1,0 +1,15 @@
+---
+- name: remove coredumps
+  gather_facts: no
+  hosts: redpanda
+  remote_user: fedora
+  tasks:
+  - name: rm all cores
+    shell:
+      cmd: rm -rf /var/lib/redpanda/coredump/*
+  - name: create core dir
+    file:
+      path: /var/lib/redpanda/coredump
+      state: directory
+      owner: redpanda
+      group: redpanda

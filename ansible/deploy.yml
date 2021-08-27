@@ -1,0 +1,31 @@
+---
+- name: deploy-cluster
+  become: yes
+  hosts: redpanda
+  gather_facts: no
+  remote_user: fedora
+  tasks:
+    - name: copy rpm
+      copy:
+        dest: /tmp/redpanda.rpm
+        # src: /home/mmaslanka/dev/v/build/debug/clang/dist/rpm/RPMS/x86_64/redpanda-0.0-dev.x86_64.rpm
+        src: /home/mmaslanka/dev/v/build/release/clang/dist/rpm/RPMS/x86_64/redpanda-0.0-dev.x86_64.rpm
+    - name: backup cfg
+      shell:
+        cmd: cp /etc/redpanda/redpanda.yaml /etc/redpanda/redpanda.yaml.ct
+    - name: dnf remove old redpanda
+      dnf:
+        name: redpanda
+        state: removed
+    - name: dnf install new
+      dnf:
+        name:  /tmp/redpanda.rpm
+        state: present
+    - name: restore cfg
+      shell:
+        cmd: cp /etc/redpanda/redpanda.yaml.ct /etc/redpanda/redpanda.yaml
+    - name: restart
+    
+      systemd:
+        name: redpanda
+        state: restarted

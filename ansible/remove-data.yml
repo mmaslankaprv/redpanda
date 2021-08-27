@@ -1,0 +1,32 @@
+---
+- name: remove-data
+  gather_facts: no
+  become: yes
+  hosts: redpanda
+  tasks:
+  - name: stop
+    systemd:
+      name: redpanda
+      state: stopped
+  - name: remove pid
+    file:
+       path: /var/lib/redpanda/pid
+       state: absent
+  - name: remove dir
+    file:
+      path: /mnt/vectorized/redpanda/data
+      state: absent
+  - name: remove dir
+    file:
+      path: /mnt/vectorized/redpanda/data
+      state: absent
+  - name: remove dir
+    file:
+      path: /mnt/vectorized/redpanda/kafka-data
+      state: absent
+  - name: restart
+    systemd:
+      name: redpanda
+      state: started
+
+      

@@ -1,0 +1,11 @@
+---
+- name: get free space
+  gather_facts: no
+  hosts: redpanda
+  tasks:
+  - name: free space
+    shell:
+      cmd: "df -h" 
+    register: out
+  - debug:
+      msg: "{{ out.stdout_lines }}"

@@ -1,0 +1,10 @@
+---
+  - name: Deploy open messaging benchmark
+    gather_facts: no
+    hosts: load
+    tasks:
+    - name: deploy benchmark
+      copy:
+        src: /home/mmaslanka/dev/openmessaging-benchmark/driver-kafka/target/driver-kafka-0.0.1-SNAPSHOT.jar
+        dest: /opt/om-bench/lib/driver-kafka-0.0.1-SNAPSHOT.jar
+  

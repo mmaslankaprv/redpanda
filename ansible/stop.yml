@@ -1,0 +1,11 @@
+---
+- name: stop Redpanda
+  gather_facts: no
+  hosts: redpanda
+  become: yes
+  remote_user: fedora
+  tasks:
+  - name: stop redpanda
+    systemd:
+        state: stopped
+        name: redpanda

@@ -1,0 +1,46 @@
+---
+  - name: Deploy open messaging benchmark
+    gather_facts: no
+    hosts: all
+    tasks:
+    - name: install java
+      apt: 
+        name: default-jdk
+        update_cache: true
+        state: present
+    - name: deploy benchmark
+      unarchive:
+        src: /home/mmaslanka/dev/openmessaging-benchmark/package/target/openmessaging-benchmark-0.0.1-SNAPSHOT-bin.tar.gz
+        dest: /opt/
+        creates: /opt/openmessaging-benchmark-0.0.1-SNAPSHOT
+    - name: link
+      file:
+        src: /opt/openmessaging-benchmark-0.0.1-SNAPSHOT
+        dest: /opt/benchmark
+        state: link
+    - name: find kafka drivers
+      find:
+        paths: /opt/benchmark/driver-kafka
+        patterns: "*.yaml"
+      register: k_drivers
+    - name: Configure kafka drivers
+      replace:
+        path: "{{ item.path }}"
+        regexp: 'bootstrap.servers=.*'
+        replace: bootstrap.servers={{groups['redpanda'] | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092
+      with_items: "{{ k_drivers.files }}"
+    - name: find redpanda drivers
+      find:
+        paths: /opt/benchmark/driver-redpanda
+        patterns: "*.yaml"
+      register: r_drivers
+    - name: Configure redpanda drivers
+      replace:
+        path: "{{ item.path }}"
+        regexp: 'bootstrap.servers=.*'
+        replace: bootstrap.servers={{groups['redpanda'] | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092
+      with_items: "{{ r_drivers.files }}"
+    - name: create results folder
+      file: 
+        dest: /opt/benchmark/results
+        state: directory

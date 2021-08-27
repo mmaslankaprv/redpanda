@@ -1,0 +1,80 @@
+---
+
+- name: kafka producer
+  gather_facts: no 
+  #hosts: "{{ groups['redpanda'][1::2] }}"
+  hosts: redpanda
+  vars:
+    user: "{{hostvars[inventory_hostname].ansible_user}}"
+    record_size: 1024
+    topic: 'sfo'
+    partitions: 192
+    rf: 3
+    record_count: 2147483647000
+    throughput:  -1
+    #throughput: 32000
+    acks: 1
+    batch_size: 81960
+    buf_mem: 1048576
+  tasks:
+#   - name: create topic
+#     become_user: "{{user}}"
+#     shell:
+#       cmd: | 
+#           /opt/kafka-dev/bin/kafka-topics.sh \
+#             --bootstrap-server "{{ansible_play_batch | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092" \
+#             --create \
+#             --topic {{topic}} \
+#             --partitions {{partitions}} \
+#             --replication-factor {{rf}}
+  - name: copy script
+    copy: 
+      src: /home/mmaslanka/dev/v/tools/kafka_script.py
+      dest: /opt/redpanda/kafka_script.py
+      mode: '1775'
+  - name: create producer service 
+    copy:
+      dest: /lib/systemd/system/kafka-producer@.service
+      content: |
+        [Unit]
+        Description="Kafka producer #%i"
+        PartOf=kafka-producers.target
+
+        [Service]
+        PermissionsStartOnly=true
+        Type=simple
+        ExecStart=/opt/redpanda/kafka_script.py \
+            --kafka-dir /opt/kafka-dev \
+            --kafka-type produce \
+            --servers {{ansible_play_batch | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092
+        TimeoutStartSec=900
+        TimeoutStopSec=11s
+        KillMode=process
+        Restart=always
+        User=redpanda
+        OOMScoreAdjust=-950
+        StandardOutput=syslog
+        StandardError=syslog
+        SyslogLevelPrefix=false
+        AmbientCapabilities=CAP_SYS_NICE
+        
+
+  - name: create multi-producers target
+    copy:
+        dest: /lib/systemd/system/kafka-producers.target
+        content: |
+          [Unit]
+          Description=Kafka producers
+          After=redpanda.service
+          Requires=kafka-producer@1.service kafka-producer@2.service kafka-producer@3.service kafka-producer@4.service kafka-producer@5.service kafka-producer@6.service kafka-producer@7.service kafka-producer@8.service kafka-producer@9.service kafka-producer@10.service
+          
+          [Install]
+          WantedBy=multi-user.target
+  - name: restart systemd
+    systemd:
+      daemon_reload: yes
+  - name: start producer
+    systemd:
+      name: kafka-producers.target
+      enabled: true
+      state: restarted

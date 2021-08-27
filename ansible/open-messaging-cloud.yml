@@ -1,0 +1,5 @@
+---
+- import_playbook: open-messaging.yml
+- import_playbook: open-messaging-wrkr.yml
+- import_playbook: open-messaging-lr.yml
+- import_playbook: open-messaging-security.yml

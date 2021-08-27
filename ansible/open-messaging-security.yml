@@ -1,0 +1,56 @@
+---
+  - name: configure open messaging benchmark
+    gather_facts: no
+    hosts: all
+    become: yes
+    vars:
+      servers: 0.rp-ceace61da385a72cb9db75d1a49719409eafc1e5.data.dev.vectorized.cloud:30773,1.rp-ceace61da385a72cb9db75d1a49719409eafc1e5.data.dev.vectorized.cloud:30773,2.rp-ceace61da385a72cb9db75d1a49719409eafc1e5.data.dev.vectorized.cloud:30773
+      username: test-sa
+      password: qbI%ccICzKAs4BajeGqn8d
+      cert_files:
+        - /home/mmaslanka/dev/staging-cluster-certs/cluster.crt
+        - /home/mmaslanka/dev/staging-cluster-certs/cluster.key
+        - /home/mmaslanka/dev/staging-cluster-certs/ca.crt
+        - /home/mmaslanka/dev/staging-cluster-certs/truststore.jks
+        - /home/mmaslanka/dev/staging-cluster-certs/keystore.jks
+
+    tasks:
+    - name: find redpanda drivers
+      find:
+        paths: /opt/benchmark/driver-redpanda
+        patterns: "*.yaml"
+      register: r_drivers
+    - name: Configure redpanda drivers
+      replace:
+        path: "{{ item.path }}"
+        regexp: 'bootstrap.servers=.*'
+        replace: bootstrap.servers={{servers}}
+      with_items: "{{ r_drivers.files }}"
+    - name: Remove previous configuration
+      blockinfile:
+        path: "{{item.path}}"
+        insertafter: ".*bootstrap.servers:.*"
+        state: absent
+        marker: "{mark}.general.security"
+        block:
+      with_items: "{{ r_drivers.files }}"
+    - name: Configure general security
+      blockinfile:
+        path: "{{item.path}}"
+        insertafter: "^commonConfig.*$"
+        state: present
+        marker: "  {mark}.general.security"
+        block: |2
+            security.protocol=SASL_SSL
+            sasl.mechanism=SCRAM-SHA-256
+            ssl.truststore.location=/opt/benchmark/truststore.jks
+            ssl.truststore.password=redpanda
+            ssl.keystore.location=/opt/benchmark/keystore.jks
+            ssl.keystore.password=redpanda
+            sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="{{username}}" password="{{password}}";
+      with_items: "{{ r_drivers.files }}"
+    - name: copy certs
+      copy:
+        src: "{{item}}"
+        dest: /opt/benchmark
+      with_items: "{{ cert_files }}"

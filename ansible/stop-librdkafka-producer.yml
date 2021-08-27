@@ -1,0 +1,14 @@
+---
+ - name: stop verifier
+   gather_facts: no
+   hosts: all
+   tasks:
+   - name: stop
+     systemd:
+         name: verifiers.target
+         enabled: false
+         state: stopped
+   - name: 
+     shell:
+       cmd: "killall -9 java"
+

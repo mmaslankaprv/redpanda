@@ -1,0 +1,10 @@
+---
+  - name: remove coredumps
+    gather_facts: no
+    hosts: redpanda
+    remote_user: fedora
+    tasks:
+    - name: rm all cores
+      shell:
+        cmd: find /var/lib/redpanda/data/kafka -name '*.compaction_index' | xargs rm
+    

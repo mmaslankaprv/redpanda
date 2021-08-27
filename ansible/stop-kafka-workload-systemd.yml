@@ -1,0 +1,20 @@
+---
+    - name: stop kafka producer
+      hosts: "{{ groups['redpanda'][1::2] }}"  
+      gather_facts: no
+      tasks:
+      - name: stop producer process
+        systemd:
+            state: stopped
+            name: kafka-producer
+    - name: stop kafka consumer
+      hosts: "{{ groups['redpanda'][::2] }}"  
+      gather_facts: no
+      tasks:
+      - name: stop consumer process
+        systemd:
+          state: stopped
+          name: kafka-consumer
+    
+    
+      

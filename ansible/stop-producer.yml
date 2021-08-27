@@ -1,0 +1,12 @@
+---
+- name: start kafka producer
+  gather_facts: no
+  hosts: redpanda
+  tasks:
+  - name: stop producer process
+    shell:
+      cmd: | 
+        jps | grep ProducerPerformance | awk '{print $1}' | xargs kill -9
+
+
+  

@@ -417,12 +417,16 @@ ss::future<> segment_appender::process_flush_ops(size_t committed) {
 struct write_op {
     ss::sstring name;
     ss::lowres_clock::time_point start = ss::lowres_clock::now();
+    segment_appender* ap;
 
-    explicit write_op(ss::sstring name)
-      : name(std::move(name)) {}
+    explicit write_op(ss::sstring name, segment_appender* ap)
+      : name(std::move(name))
+      , ap(ap) {}
 };
 
 static thread_local std::vector<ss::lw_shared_ptr<write_op>> writes;
+static thread_local size_t writes_max_size{0};
+static thread_local size_t periodic_writes_max_size{0};
 static thread_local ss::timer<ss::lowres_clock> writes_report([] {
     std::sort(writes.begin(), writes.end(), [](auto a, auto b) {
         return a->start < b->start;
@@ -432,7 +436,15 @@ static thread_local ss::timer<ss::lowres_clock> writes_report([] {
     for (auto op : writes) {
         auto diff = ss::lowres_clock::now() - op->start;
 
-        vlog(stlog.info, "AAA write {{{}}} age {} ms", op->name, diff / 1ms);
+        vlog(
+          stlog.info,
+          "AAA write {{{}}} age {} ms - abs_max {} max: {}",
+          op->name,
+          diff / 1ms,
+          writes_max_size,
+          periodic_writes_max_size);
+
+        periodic_writes_max_size = 0;
 
         if (++count == 10) {
             break;
@@ -499,7 +511,10 @@ void segment_appender::dispatch_background_head_write() {
             .then([this, h, w, start_offset, expected, src, full](
                     ss::semaphore_units<> u) mutable {
                 auto wo = writes.emplace_back(
-                  ss::make_lw_shared<write_op>("dma-write"));
+                  ss::make_lw_shared<write_op>("dma-write", this));
+                writes_max_size = std::max(writes_max_size, writes.size());
+                periodic_writes_max_size = std::max(
+                  periodic_writes_max_size, writes.size());
                 return _out
                   .dma_write(start_offset, src, expected, _opts.priority)
                   .then([this, h, w, expected, full, wo](size_t got) {

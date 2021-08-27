@@ -1,0 +1,35 @@
+---
+  - name: kafka tooling
+    hosts: redpanda
+    gather_facts: no
+    vars:
+        user: "{{hostvars[inventory_hostname].ansible_user}}"
+    tasks:
+      - name: apt install deps
+        become: yes
+        apt:
+          name: iotop,sysstat,psmisc,telnet,htop,iftop,kafkacat,fio,systemd-coredump
+          state: present
+      - name: link kafka-bin
+        become: true
+        file:
+            src: /opt/kafka-dev
+            dest: ${HOME}/kafka-dev
+            owner: "{{user}}"
+            state: link
+      - name: copy kafka simple bench
+        become_user: "{{user}}"
+        copy:
+          dest: ${HOME}/kafka-dev
+          src: /home/mmaslanka/dev/v/tools/kafka_simple_bench.sh
+      - name: install kaf
+        shell:
+            cmd: 'curl https://raw.githubusercontent.com/birdayz/kaf/master/godownloader.sh | bash'
+      - name: chown kaf
+        file:
+            path: /home/{{user}}/bin
+            owner: "{{user}}"
+      - name: kaf configure cluster
+        become_user: "{{user}}"
+        shell:
+            cmd: "${HOME}/bin/kaf config add-cluster local -b {{ansible_play_batch | map('extract', hostvars, ['private_ip']) |join(':9092,')}}"

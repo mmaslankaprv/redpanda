@@ -1,0 +1,23 @@
+---
+- name: install redpanda release
+  become: yes
+  hosts: redpanda
+  vars:
+    #version: 20.12.7-1-c2c8599
+    #version: 21.1.4-1-d698a3b
+    version: 21.6.5-1-292b78aa
+    #version: 21.4.15-1-abbb009
+  tasks:
+    - name: add repo
+      shell:
+        cmd: curl -1sLf 'https://packages.vectorized.io/nzc4ZYQK3WRGd9sy/redpanda/cfg/setup/bash.deb.sh' | sudo -E bash
+    - name: install redpanda package
+      apt:
+        name:  redpanda={{version}}
+        state: present
+        update_cache: no
+        force: true
+    - name: restart redpanda
+      systemd:
+        name: redpanda
+        state: restarted

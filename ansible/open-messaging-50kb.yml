@@ -1,0 +1,107 @@
+---
+  - name: configure open messaging benchmark
+    gather_facts: no
+    hosts: all
+    become: yes
+    tasks:
+    - name: copy workloads
+      copy:
+        dest: /opt/benchmark/workloads
+        src: /home/mmaslanka/dev/om-bench-roko/workloads/blog
+    - name: copy payload
+      copy:
+        dest: /opt/benchmark
+        src: /home/mmaslanka/dev/om-bench-roko/payload
+    - name: copy drivers
+      copy:
+        dest: /opt/benchmark/driver-redpanda/redpanda-ack-1-group-15MB-batch.yaml
+        src: /home/mmaslanka/dev/om-bench-roko/driver-redpanda/redpanda-ack-1-group-15MB-batch.yaml
+    - name: find kafka drivers
+      find:
+        paths: /opt/benchmark/driver-kafka
+        patterns: "*.yaml"
+      register: k_drivers
+    - name: Configure kafka drivers
+      replace:
+        path: "{{ item.path }}"
+        regexp: 'bootstrap.servers=.*'
+        replace: bootstrap.servers={{groups['redpanda'] | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092
+      with_items: "{{ k_drivers.files }}"
+    - name: find redpanda drivers
+      find:
+        paths: /opt/benchmark/driver-redpanda
+        patterns: "*.yaml"
+      register: r_drivers
+    - name: Configure redpanda drivers
+      replace:
+        path: "{{ item.path }}"
+        regexp: 'bootstrap.servers=.*'
+        replace: bootstrap.servers={{groups['redpanda'] | map('extract', hostvars, ['private_ip']) |join(':9092,')}}:9092
+      with_items: "{{ r_drivers.files }}"
+    - name: create results folder
+      file: 
+        dest: /opt/benchmark/results
+        state: directory
+    - name: start script - redpanda
+      copy: 
+        mode: 0755
+        dest: /opt/benchmark/benchmark-redpanda.sh
+        content: |
+           #!/bin/bash
+
+           workload=$1
+           tld=/opt/benchmark
+           cd ${tld}
+           
+           ${tld}/bin/benchmark -d ${tld}/driver-redpanda/redpanda-ack-all-group-linger-1ms.yaml \
+           ${tld}/workloads/blog/${workload}.yaml
+    
+    - name: start script - redpanda all
+      copy: 
+        mode: 0755
+        dest: /opt/benchmark/benchmark-redpanda-all.sh
+        content: |
+           #!/bin/bash
+
+           workload=$1
+           tld=/opt/benchmark
+           cd ${tld}
+           sudo ${tld}/bin/benchmark -d ${tld}/driver-redpanda/redpanda-ack-all-group-linger-1ms.yaml \
+           ${tld}/workloads/blog/${workload}.yaml
+
+    - name: start redpanda blog
+      copy: 
+         mode: 0755
+         dest: /opt/benchmark/start-redpanda-all.sh
+         content: |
+           #!/bin/bash
+           workloaddir="/opt/benchmark/workloads/blog/"
+           cd /opt/benchmark
+           for file in  ${workloaddir}/*.yaml
+           do
+              sudo bin/benchmark -d driver-redpanda/redpanda-ack-all-group-linger-1ms.yaml ${file}
+           done - name: start redpanda blog
+    - name: start single script
+      copy: 
+         mode: 0755
+         dest: /opt/benchmark/start-redpanda-single.sh
+         content: |
+           #!/bin/bash
+           workloaddir="/opt/benchmark/workloads/blog/"
+           rate=$1
+           cd /opt/benchmark
+           sudo bin/benchmark -d driver-redpanda/redpanda-ack-all-group-linger-1ms.yaml /opt/benchmark/workloads/blog/1-topic-100-partitions-1kb-4-producers-${rate}-rate.yaml
+       
+    - name: start kafka blog
+      copy: 
+         mode: 0755
+         dest: /opt/benchmark/start-kafka-all.sh
+         content: |
+           #!/bin/bash
+           workloaddir="/opt/benchmark/workloads/blog/"
+           cd /opt/benchmark
+           for file in  ${workloaddir}/*.yaml
+           do
+              sudo bin/benchmark -d driver-kafka/kafka-sync-group-all-1ms.yaml ${file}
+           done
+

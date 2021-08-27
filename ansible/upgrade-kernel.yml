@@ -1,0 +1,12 @@
+---
+- name: upgrade ubuntu
+  gather_facts: no
+  hosts: redpanda
+  become: yes
+  tasks:
+  - name: upgrade
+    apt:
+      upgrade: safe
+      update_cache: yes
+  - name: reboot
+    reboot:

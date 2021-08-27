@@ -1,0 +1,10 @@
+---
+- name: start systemd redpanda service
+  gather_facts: no
+  hosts: redpanda
+  become: yes
+  tasks:
+  - name: start redpanda
+    systemd:
+        state: restarted
+        name: redpanda

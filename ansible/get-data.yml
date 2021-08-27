@@ -1,0 +1,18 @@
+---
+- name: get data
+  gather_facts: no
+  become: yes
+  hosts: redpanda
+  remote_user: fedora
+  vars:
+    path: "kafka/test-topic-bCuSyEg-0000"
+  tasks:
+    - name: get log files
+      find: paths="/var/lib/redpanda/data/{{path}}" recurse=yes
+      register: files_to_copy
+    - name: download data
+      fetch:
+        src: "{{item.path}}"
+        flat: false
+        dest: ~/dev/data/
+      with_items: "{{files_to_copy.files}}"

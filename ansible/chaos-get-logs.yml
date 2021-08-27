@@ -1,0 +1,13 @@
+---
+- name: get logs
+  gather_facts: no
+  become: yes
+  hosts: redpanda
+  vars:
+    target: chaos
+  tasks:
+    - name: download log
+      fetch:
+        src: /srv/redpanda/logs/redpanda.log
+        flat: true
+        dest: ./{{target}}/{{inventory_hostname}}/redpanda.log

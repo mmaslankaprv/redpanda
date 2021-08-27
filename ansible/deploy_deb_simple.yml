@@ -1,0 +1,28 @@
+---
+- name: deploy-cluster
+  become: yes
+  hosts: redpanda
+  gather_facts: yes
+  vars:
+    sha1:  "ab1ffc4"
+    compiler: "clang"
+    bt: "release"
+    dir: "redpanda"
+  tasks:
+    - name: copy debian
+      copy:
+        dest: /tmp/redpanda.deb
+        src: /home/mmaslanka/dev/{{dir}}/vbuild/{{bt}}/{{compiler}}/dist/debian/redpanda_0.0-dev-{{sha1}}_amd64.deb
+    - name: remove old deb
+      apt:
+        name: redpanda
+        state: absent
+    #     purge: true
+    - name: apt install new
+      apt:
+        deb:  /tmp/redpanda.deb
+    - name: restart
+      systemd:
+        name: redpanda
+        state: restarted
+

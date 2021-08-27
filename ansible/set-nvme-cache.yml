@@ -1,0 +1,20 @@
+---
+- name: set NVME cache
+  gather_facts: no
+  become: yes
+  hosts: redpanda
+  vars:
+    #cache_type: 'write through'
+    cache_type: 'write back'
+  tasks:
+  - name: set wt
+    shell: |
+       echo {{cache_type}} > /sys/block/nvme0n1/queue/write_cache
+       echo {{cache_type}} > /sys/block/nvme0n2/queue/write_cache
+       echo {{cache_type}} > /sys/block/nvme0n3/queue/write_cache
+       echo {{cache_type}} > /sys/block/nvme0n4/queue/write_cache
+
+
+# echo {{cache_type}} > /sys/block/nvme0n5/queue/write_cache
+ #  echo {{cache_type}} > /sys/block/nvme0n6/queue/write_cache
+    

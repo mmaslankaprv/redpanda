@@ -1,0 +1,12 @@
+---
+- name: ls-data
+  gather_facts: no
+  hosts: redpanda
+  remote_user: fedora
+  tasks:
+  - name: ls data
+    shell:
+      cmd: "du -sh /var/lib/redpanda/data/kafka/sfo/*" 
+    register: out
+  - debug:
+      msg: "{{ out.stdout_lines }}"

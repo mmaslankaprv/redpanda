@@ -1,0 +1,19 @@
+---
+- name: list coredumps
+  gather_facts: no
+  hosts: redpanda
+  remote_user: fedora
+  tasks:
+  - name: change mode
+    command: find /var/lib/redpanda/coredump -type f -exec chmod 0644 {} \;
+  - name: ls core
+    find:
+      paths: /var/lib/redpanda/coredump
+      recurse: yes
+    register: files_matched
+  - debug:
+      msg: "{{ files_matched.files | map(attribute='path') | join(', ')}}"
+  - name: copy libthread_db
+    copy:
+      dest: /opt/redpanda/lib
+      src: /lib64/libthread_db.so.1

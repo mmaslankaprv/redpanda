@@ -1,0 +1,13 @@
+---
+- name: ls-data
+  gather_facts: no
+  hosts: redpanda
+  remote_user: fedora
+  become: true
+  tasks:
+  - name: iotop
+    shell:
+      cmd: "iostat -xh"
+    register: out
+  - debug:
+      msg: "{{ out.stdout_lines }}"

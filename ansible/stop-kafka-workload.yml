@@ -1,0 +1,20 @@
+---
+    - name: stop kafka producer
+      hosts: "{{ groups['redpanda'][1::2] }}"  
+      gather_facts: no
+      tasks:
+      - name: stop producer process
+        shell:
+          cmd: | 
+            jps | grep ProducerPerformance | awk '{print $1}' | xargs kill -9
+    - name: stop kafka consumer
+      hosts: "{{ groups['redpanda'][::2] }}"  
+      gather_facts: no
+      tasks:
+      - name: stop consumer process
+        shell:
+          cmd: | 
+            jps | grep ConsumerPerformance | awk '{print $1}' | xargs kill -9
+    
+    
+      

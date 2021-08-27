@@ -1,0 +1,37 @@
+---
+
+- name: patch redpanda binary
+  gather_facts: no 
+  hosts: redpanda
+  become: true
+  tasks:
+  - name: install patchelf
+    apt:
+      name: patchelf
+      state: present
+  - name: remove redpanda link
+    file:
+      path: /opt/redpanda/bin/redpanda
+      state: absent
+  - name: patch redpanda binary
+    shell:
+      cmd: patchelf --set-interpreter /opt/redpanda/lib/ld.so /opt/redpanda/libexec/redpanda.bin
+  - name: make binary executable
+    file:
+      path: /opt/redpanda/libexec/redpanda.bin
+      mode: '1775'
+  - name: create thunk
+    copy:
+      dest:  /opt/redpanda/bin/redpanda
+      content: |
+        #!/bin/bash -e
+        export LD_LIBRARY_PATH="/opt/redpanda/lib"
+        exec -a "$0" /opt/redpanda/libexec/redpanda.bin "$@"
+  - name: make thunk executable
+    file:
+      path: /opt/redpanda/bin/redpanda
+      mode: '1775'
+  - name: restart redpanda
+    systemd:
+      name: redpanda
+      state: restarted

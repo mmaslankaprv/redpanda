@@ -1,0 +1,82 @@
+---
+- name: create librdkafka configuration
+  gather_facts: no
+  hosts: all
+  become: yes
+  vars:
+    servers: 0.rp-ceace61da385a72cb9db75d1a49719409eafc1e5.data.dev.vectorized.cloud:30773,1.rp-ceace61da385a72cb9db75d1a49719409eafc1e5.data.dev.vectorized.cloud:30773,2.rp-ceace61da385a72cb9db75d1a49719409eafc1e5.data.dev.vectorized.cloud:30773
+    username: test-sa
+    password: qbI%ccICzKAs4BajeGqn8d
+    cert_files:
+      - /home/mmaslanka/dev/staging-cluster-certs/cluster.crt
+      - /home/mmaslanka/dev/staging-cluster-certs/cluster.key
+      - /home/mmaslanka/dev/staging-cluster-certs/ca.crt
+      - /home/mmaslanka/dev/staging-cluster-certs/truststore.jks
+      - /home/mmaslanka/dev/staging-cluster-certs/keystore.jks
+  tasks:
+  # - name: copy certs
+  #   copy:
+  #       src: "{{item}}"
+  #       dest: /opt/librdkafka
+  #   with_items: "{{ cert_files }}"
+  - name: create start script
+    copy: 
+        dest: /opt/librdkafka/start-perf-cloud.sh
+        mode: 0755
+        content: |
+          #!/bin/bash
+
+          exec=/opt/librdkafka/examples/rdkafka_performance
+          brokers="{{servers}}"
+          options="-X security.protocol=sasl_ssl"
+          options="${options} -X ssl.key.location=/opt/librdkafka/cluster.key"
+          options="${options} -X ssl.certificate.location=/opt/librdkafka/cluster.crt"
+          options="${options} -X ssl.ca.location=/opt/librdkafka/ca.crt"
+          options="${options} -X sasl.mechanism=SCRAM-SHA-256"
+          options="${options} -X sasl.username={{username}}"
+          options="${options} -X sasl.password={{password}}"
+
+          echo "$exec $1 -b ${brokers} ${options} ${@:2}"
+          $exec $1 -b ${brokers} ${options} ${@:2}
+  - name: create librdkafka systemd service
+    copy:
+      dest: /lib/systemd/system/rd-producer@.service
+      content: |
+        [Unit]
+        Description="rd-producer-#%i"
+        PartOf=rdkafka-producers.target
+
+        [Service]
+        PermissionsStartOnly=true
+        Type=simple
+        Environment=TOPIC=test-rd-kafka
+        Environment=SIZE=128
+        Environment=ACKS=-1
+        ExecStart=/opt/librdkafka/start-perf-cloud.sh -P -s $SIZE -z none -t $TOPIC
+        TimeoutStartSec=900
+        TimeoutStopSec=11s
+        KillMode=mixed
+        Restart=always
+        User=root
+        OOMScoreAdjust=-950
+        StandardOutput=syslog
+        StandardError=syslog
+        SyslogLevelPrefix=false
+        AmbientCapabilities=CAP_SYS_NICE
+  - name: create multi-producers target
+    copy:
+        dest: /lib/systemd/system/rdkafka-producers.target
+        content: |
+          [Unit]
+          Description=rdkafka-producers
+          Requires=rd-producer@1.service rd-producer@2.service rd-producer@3.service rd-producer@4.service rd-producer@5.service
+          
+          [Install]
+          WantedBy=multi-user.target
+  - name: restart systemd
+    systemd:
+      daemon_reload: yes
+  - name: start verifier
+    systemd:
+      name: rdkafka-producers.target
+      state: restarted

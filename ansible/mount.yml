@@ -1,0 +1,43 @@
+---
+- name: mount
+  gather_facts: no
+  become: yes
+  hosts: redpanda
+  remote_user: fedora
+  tasks:
+    # - name: create xfs
+    #   shell:
+    #     cmd: mkfs.xfs /dev/nvme0n1
+    - name: stop
+      systemd:
+        name: redpanda
+        state: stopped
+    - name: remove
+      shell: 
+        cmd: rm -rf /var/lib/redpanda
+    - name: remove
+      shell: 
+          cmd: rm -rf /mnt/vectorized/redpanda 
+    - name: data path
+      file:
+          path: /mnt/vectorized/redpanda
+          state: directory
+          owner: redpanda
+          group: redpanda
+          mode: ugo=rwx
+    - name: set premissions
+      file:
+          dest: /var/lib/redpanda
+          src: /mnt/vectorized/redpanda
+          state: link
+          owner: root
+          group: root
+          mode: ugo=rwx
+
+    - name: chown
+      shell:
+        cmd: chown -R redpanda:redpanda /var/lib/redpanda
+    - name: restart
+      systemd:
+        name: redpanda
+        state: restarted
