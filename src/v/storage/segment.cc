@@ -235,19 +235,57 @@ void segment::release_appender_in_background(readers_cache* readers_cache) {
       });
 }
 
+struct flush_op {
+    ss::sstring name;
+    ss::lowres_clock::time_point start = ss::lowres_clock::now();
+
+    explicit flush_op(ss::sstring name)
+      : name(std::move(name)) {}
+};
+
+static thread_local std::vector<ss::lw_shared_ptr<flush_op>> flushes;
+static thread_local ss::timer<ss::lowres_clock> flushes_report([] {
+    std::sort(flushes.begin(), flushes.end(), [](auto a, auto b) {
+        return a->start < b->start;
+    });
+    int count = 0;
+    for (auto op : flushes) {
+        vlog(
+          stlog.info,
+          "XXX flush {{{}}} age {}ms",
+          op->name,
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+            ss::lowres_clock::now() - op->start)
+            .count());
+        if (++count == 10) {
+            break;
+        }
+    }
+});
+
 ss::future<> segment::flush() {
     check_segment_not_closed("flush()");
-    return read_lock().then([this](ss::rwlock::holder h) {
+    auto outer = ss::make_lw_shared<flush_op>("outer");
+    flushes.push_back(outer);
+    return read_lock().then([this, outer](ss::rwlock::holder h) {
+        std::erase(flushes, outer);
         return do_flush().finally([h = std::move(h)] {});
     });
 }
 ss::future<> segment::do_flush() {
+    if (!flushes_report.armed()) {
+        flushes_report.arm_periodic(std::chrono::seconds(5));
+    }
+
     if (!_appender) {
         return ss::make_ready_future<>();
     }
+    auto inner = ss::make_lw_shared<flush_op>("inner");
+    flushes.push_back(inner);
     auto o = _tracker.dirty_offset;
     auto fsize = _appender->file_byte_offset();
-    return _appender->flush().then([this, o, fsize] {
+    return _appender->flush().then([this, o, fsize, inner] {
+        std::erase(flushes, inner);
         // never move committed offset backward, there may be multiple
         // outstanding flushes once the one executed later in terms of offset
         // finishes we guarantee that all previous flushes finished.
