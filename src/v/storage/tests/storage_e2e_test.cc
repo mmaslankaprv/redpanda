@@ -1824,3 +1824,53 @@ FIXTURE_TEST(committed_offset_updates, storage_test_fixture) {
 
     ss::when_all_succeed(futures.begin(), futures.end()).get();
 }
+
+FIXTURE_TEST(flush_after_writes, storage_test_fixture) {
+    auto cfg = default_log_config(test_dir);
+    cfg.stype = storage::log_config::storage_type::disk;
+    cfg.cache = storage::with_cache::no;
+    cfg.max_segment_size = 500_MiB;
+    cfg.sanitize_fileops = storage::debug_sanitize_files::no;
+    storage::ntp_config::default_overrides overrides;
+    ss::abort_source as;
+    storage::log_manager mgr = make_log_manager(cfg);
+    info("config: {}", mgr.config());
+    auto deferred = ss::defer([&mgr]() mutable { mgr.stop().get0(); });
+    auto ntp = model::ntp("default", "test", 0);
+    auto log = mgr
+                 .manage(storage::ntp_config(
+                   ntp,
+                   mgr.config().base_dir,
+                   std::make_unique<storage::ntp_config::default_overrides>(
+                     overrides)))
+                 .get0();
+
+    auto batch = storage::test::make_random_batch(model::offset(0), 1024, false);
+    auto batch_2 = storage::test::make_random_batch(
+      model::offset(0), 20, false);
+
+    auto append = [&] {
+        ss::circular_buffer<model::record_batch> batches;
+        batches.reserve(2);
+        batches.push_back(batch.copy());
+        batches.push_back(batch_2.copy());
+        // Append single batch
+        auto rdr = model::make_memory_record_batch_reader(std::move(batches));
+        storage::log_appender appender = log.make_appender(
+          storage::log_append_config{
+            .should_fsync = storage::log_append_config::fsync::no,
+            .io_priority = ss::default_priority_class(),
+            .timeout = model::no_timeout});
+
+        return std::move(rdr).for_each_ref(
+          std::move(appender), model::no_timeout);
+    };
+
+    for (int j = 0; j < 2000; ++j) {
+        for (auto i = 0; i < 40; ++i) {
+            append().get();
+        }
+        log.flush().get();
+        info("flushed - {}", log.offsets());
+    }
+}

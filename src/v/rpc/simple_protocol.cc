@@ -14,13 +14,16 @@
 
 #include <seastar/core/future-util.hh>
 
+#include <cstddef>
 #include <exception>
 
 namespace rpc {
 struct server_context_impl final : streaming_context {
     server_context_impl(server::resources s, header h)
       : res(std::move(s))
-      , hdr(h) {}
+      , hdr(h) {
+        res.probe().request_received();
+    }
     ss::future<ss::semaphore_units<>> reserve_memory(size_t ask) final {
         auto fut = get_units(res.memory(), ask);
         if (res.memory().waiters()) {
@@ -28,31 +31,41 @@ struct server_context_impl final : streaming_context {
         }
         return fut;
     }
+    ~server_context_impl() override {
+        res.probe().request_completed();
+        if (m != nullptr) {
+            m->probes.finished();
+        }
+    }
     const header& get_header() const final { return hdr; }
     void signal_body_parse() final { pr.set_value(); }
     server::resources res;
+    method* m = nullptr;
     header hdr;
     ss::promise<> pr;
 };
 
 ss::future<> simple_protocol::apply(server::resources rs) {
     return ss::do_until(
-      [rs] { return rs.conn->input().eof() || rs.abort_requested(); },
-      [this, rs]() mutable {
-          return parse_header(rs.conn->input())
-            .then([this, rs](std::optional<header> h) mutable {
-                rs.probe().request_received();
-                if (!h) {
-                    rpclog.debug(
-                      "could not parse header from client: {}", rs.conn->addr);
-                    rs.probe().header_corrupted();
-                    // Have to shutdown the connection as data in receiving
-                    // buffer may be corrupted
-                    rs.conn->shutdown_input();
-                    return ss::now();
-                }
-                return dispatch_method_once(h.value(), rs);
-            });
+             [rs] { return rs.conn->input().eof() || rs.abort_requested(); },
+             [this, rs]() mutable {
+                 return parse_header(rs.conn->input())
+                   .then([this, rs](std::optional<header> h) mutable {
+                       if (!h) {
+                           rpclog.warn(
+                             "could not parse header from client: {}",
+                             rs.conn->addr);
+                           rs.probe().header_corrupted();
+                           // Have to shutdown the connection as data in
+                           // receiving buffer may be corrupted
+                           rs.conn->shutdown_input();
+                           return ss::now();
+                       }
+                       return dispatch_method_once(h.value(), rs);
+                   });
+             })
+      .finally([] {
+
       });
 }
 
@@ -73,8 +86,7 @@ send_reply(ss::lw_shared_ptr<server_context_impl> ctx, netbuf buf) {
       .handle_exception([ctx](std::exception_ptr e) {
           vlog(rpclog.info, "Error dispatching method: {}", e);
           ctx->res.conn->shutdown_input();
-      })
-      .finally([ctx] { ctx->res.probe().request_completed(); });
+      });
 }
 
 ss::future<>
@@ -106,10 +118,13 @@ simple_protocol::dispatch_method_once(header h, server::resources rs) {
         }
 
         method* m = it->get()->method_from_id(method_id);
-
+        ctx->m = m;
+        m->probes.started();
         return m->handle(ctx->res.conn->input(), *ctx)
           .then_wrapped([ctx, m, l = ctx->res.hist().auto_measure(), rs](
                           ss::future<netbuf> fut) mutable {
+              ctx->m = nullptr;
+              m->probes.finished();
               netbuf reply_buf;
               try {
                   reply_buf = fut.get0();

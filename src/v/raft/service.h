@@ -17,6 +17,7 @@
 #include "raft/types.h"
 #include "seastarx.h"
 #include "utils/copy_range.h"
+#include "utils/hist_helper.h"
 
 #include <seastar/core/sharded.hh>
 #include <seastar/core/shared_ptr.hh>
@@ -133,15 +134,20 @@ public:
 
     [[gnu::always_inline]] ss::future<append_entries_reply>
     append_entries(append_entries_request&& r, rpc::streaming_context&) final {
-        return _probe.append_entries().then([this, r = std::move(r)]() mutable {
-            auto gr = r.target_group();
-            return dispatch_request(
-              append_entries_request::make_foreign(std::move(r)),
-              [gr]() { return make_missing_group_reply(gr); },
-              [](append_entries_request&& r, consensus_ptr c) {
-                  return c->append_entries(std::move(r));
-              });
-        });
+        static thread_local hist_helper h{"raft-service-append-entries"};
+
+        auto m = h.auto_measure();
+        return _probe.append_entries()
+          .then([this, r = std::move(r)]() mutable {
+              auto gr = r.target_group();
+              return dispatch_request(
+                append_entries_request::make_foreign(std::move(r)),
+                [gr]() { return make_missing_group_reply(gr); },
+                [](append_entries_request&& r, consensus_ptr c) {
+                    return c->append_entries(std::move(r));
+                });
+          })
+          .finally([m = std::move(m)] {});
     }
 
     [[gnu::always_inline]] ss::future<install_snapshot_reply> install_snapshot(
@@ -229,40 +235,25 @@ private:
             return ef();
         }
         auto shard = _shard_table.shard_for(group);
-        return with_scheduling_group(
-          get_scheduling_group(),
-          [this,
-           shard,
-           r = std::forward<Req>(req),
+
+        return _group_manager.invoke_on(
+          shard,
+          [r = std::forward<Req>(req),
            f = std::forward<Func>(f),
-           ef = std::forward<ErrorFactory>(ef)]() mutable {
-              return _group_manager.invoke_on(
-                shard,
-                get_smp_service_group(),
-                [r = std::forward<Req>(r),
-                 f = std::forward<Func>(f),
-                 ef = std::forward<ErrorFactory>(ef)](
-                  ConsensusManager& m) mutable {
-                    auto c = m.consensus_for(r.target_group());
-                    if (unlikely(!c)) {
-                        return ef();
-                    }
-                    return f(std::forward<Req>(r), c);
-                });
+           ef = std::forward<ErrorFactory>(ef)](ConsensusManager& m) mutable {
+              auto c = m.consensus_for(r.target_group());
+              if (unlikely(!c)) {
+                  return ef();
+              }
+              return f(std::forward<Req>(r), c);
           });
     }
 
     ss::future<std::vector<append_entries_reply>>
     dispatch_hbeats_to_core(ss::shard_id shard, hbeats_ptr requests) {
-        return with_scheduling_group(
-          get_scheduling_group(),
-          [this, shard, r = std::move(requests)]() mutable {
-              return _group_manager.invoke_on(
-                shard,
-                get_smp_service_group(),
-                [this, r = std::move(r)](ConsensusManager& m) mutable {
-                    return dispatch_hbeats_to_groups(m, std::move(r));
-                });
+        return _group_manager.invoke_on(
+          shard, [this, r = std::move(requests)](ConsensusManager& m) mutable {
+              return dispatch_hbeats_to_groups(m, std::move(r));
           });
     }
 

@@ -1798,10 +1798,308 @@ class redpanda_heapprof(gdb.Command):
                        printer=gdb.write)
 
 
+class intrusive_slist:
+    size_t = gdb.lookup_type('size_t')
+
+    def __init__(self, list_ref, link=None):
+        list_type = list_ref.type.strip_typedefs()
+        self.node_type = list_type.template_argument(0)
+        rps = list_ref['data_']['root_plus_size_']
+        self.root = rps['header_holder_']
+
+        if link is not None:
+            self.link_offset = get_field_offset(self.node_type, link)
+        else:
+            member_hook = get_template_arg_with_prefix(
+                list_type, "struct boost::intrusive::member_hook")
+            if member_hook:
+                self.link_offset = member_hook.template_argument(2).cast(
+                    self.size_t)
+            else:
+                self.link_offset = get_base_class_offset(
+                    self.node_type, "boost::intrusive::slist_base_hook")
+                if self.link_offset is None:
+                    raise Exception("Class does not extend slist_base_hook: " +
+                                    str(self.node_type))
+
+    def __iter__(self):
+        hook = self.root['next_']
+        while hook != self.root.address:
+            node_ptr = hook.cast(self.size_t) - self.link_offset
+            yield node_ptr.cast(self.node_type.pointer()).dereference()
+            hook = hook['next_']
+
+    def __nonzero__(self):
+        return self.root['next_'] != self.root.address
+
+    def __bool__(self):
+        return self.__nonzero__()
+
+    def __len__(self):
+        return len(list(self))
+
+
+class std_array:
+    def __init__(self, ref):
+        self.ref = ref
+
+    def __len__(self):
+        elems = self.ref['_M_elems']
+        return elems.type.sizeof / elems[0].type.sizeof
+
+    def __iter__(self):
+        elems = self.ref['_M_elems']
+        count = self.__len__()
+        i = 0
+        while i < count:
+            yield elems[i]
+            i += 1
+
+    def __nonzero__(self):
+        return self.__len__() > 0
+
+    def __bool__(self):
+        return self.__nonzero__()
+
+    def __getitem__(self, i):
+        return self.ref['_M_elems'][int(i)]
+
+
+class std_unordered_map:
+    def __init__(self, ref):
+        self.ht = ref['_M_h']
+        kt = ref.type.template_argument(0)
+        vt = ref.type.template_argument(1)
+        value_type = gdb.lookup_type('::std::pair<{} const, {} >'.format(
+            str(kt), str(vt)))
+        _, node_type = lookup_type([
+            '::std::__detail::_Hash_node<{}, {}>'.format(
+                value_type.name, cache) for cache in ('false', 'true')
+        ])
+        self.node_ptr_type = node_type.pointer()
+        self.value_ptr_type = value_type.pointer()
+
+    def __len__(self):
+        return self.ht['_M_element_count']
+
+    def __iter__(self):
+        p = self.ht['_M_before_begin']['_M_nxt']
+        while p:
+            pc = p.cast(
+                self.node_ptr_type)['_M_storage']['_M_storage']['__data'].cast(
+                    self.value_ptr_type)
+            yield (pc['first'], pc['second'])
+            p = p['_M_nxt']
+
+    def __nonzero__(self):
+        return self.__len__() > 0
+
+    def __bool__(self):
+        return self.__nonzero__()
+
+
+class flat_hash_map:
+    def __init__(self, ref):
+        kt = ref.type.template_argument(0)
+        vt = ref.type.template_argument(1)
+        slot_ptr_type = gdb.lookup_type('::std::pair<const {}, {} >'.format(
+            str(kt), str(vt))).pointer()
+        self.slots = ref['slots_'].cast(slot_ptr_type)
+        self.size = ref['size_']
+
+    def __len__(self):
+        return self.size
+
+    def __iter__(self):
+        size = self.size
+        slot = self.slots
+        while size > 0:
+            yield (slot['first'], slot['second'])
+            slot += 1
+            size -= 1
+
+    def __nonzero__(self):
+        return self.__len__() > 0
+
+    def __bool__(self):
+        return self.__nonzero__()
+
+
+def unordered_map(ref):
+    return flat_hash_map(ref) if ref.type.name.startswith(
+        'flat_hash_map') else std_unordered_map(ref)
+
+
+def get_local_io_queues():
+    """ Return a list of io queues for the local reactor. """
+    for dev, ioq in unordered_map(
+            gdb.parse_and_eval('\'seastar\'::local_engine._io_queues')):
+        yield dev, std_unique_ptr(ioq).dereference()
+
+
+class std_shared_ptr():
+    def __init__(self, ref):
+        self.ref = ref
+
+    def get(self):
+        return self.ref['_M_ptr']
+
+
+def std_priority_queue(ref):
+    return std_vector(ref['c'])
+
+
+class std_atomic():
+    def __init__(self, ref):
+        self.ref = ref
+
+    def get(self):
+        return self.ref['_M_i']
+
+
+class circular_buffer(object):
+    def __init__(self, ref):
+        self.ref = ref
+
+    def _mask(self, i):
+        return i & (int(self.ref['_impl']['capacity']) - 1)
+
+    def __iter__(self):
+        impl = self.ref['_impl']
+        st = impl['storage']
+        cap = impl['capacity']
+        i = impl['begin']
+        end = impl['end']
+        while i < end:
+            yield st[self._mask(i)]
+            i += 1
+
+    def size(self):
+        impl = self.ref['_impl']
+        return int(impl['end']) - int(impl['begin'])
+
+    def __len__(self):
+        return self.size()
+
+    def __getitem__(self, item):
+        impl = self.ref['_impl']
+        return (impl['storage'] +
+                self._mask(int(impl['begin']) + item)).dereference()
+
+    def external_memory_footprint(self):
+        impl = self.ref['_impl']
+        return int(
+            impl['capacity']) * self.ref.type.template_argument(0).sizeof
+
+
+class redpanda_io_queues(gdb.Command):
+    """ Print a summary of the reactor's IO queues.
+    Example:
+    Dev 0:
+        Class:                  |shares:         |ptr:            
+        --------------------------------------------------------
+        "default"               |1               |0x6000002c6500  
+        "commitlog"             |1000            |0x6000003ad940  
+        "memtable_flush"        |1000            |0x6000005cb300  
+        "streaming"             |200             |0x0             
+        "query"                 |1000            |0x600000718580  
+        "compaction"            |1000            |0x6000030ef0c0  
+        Max request size:    2147483647
+        Max capacity:        Ticket(weight: 4194303, size: 4194303)
+        Capacity tail:       Ticket(weight: 73168384, size: 100561888)
+        Capacity head:       Ticket(weight: 77360511, size: 104242143)
+        Resources executing: Ticket(weight: 2176, size: 514048)
+        Resources queued:    Ticket(weight: 384, size: 98304)
+        Handles: (1)
+            Class 0x6000005d7278:
+                Ticket(weight: 128, size: 32768)
+                Ticket(weight: 128, size: 32768)
+                Ticket(weight: 128, size: 32768)
+        Pending in sink: (0)
+    """
+    def __init__(self):
+        gdb.Command.__init__(self, 'redpanda io-queues', gdb.COMMAND_USER,
+                             gdb.COMPLETE_NONE, True)
+
+    class ticket:
+        def __init__(self, ref):
+            self.ref = ref
+
+        def __str__(self):
+            return f"Ticket(weight: {self.ref['_weight']}, size: {self.ref['_size']})"
+
+    @staticmethod
+    def _print_io_priority_class(pclass_ptr, names_from_ptrs, indent='\t\t'):
+        pclass = seastar_lw_shared_ptr(pclass_ptr).get().dereference()
+        gdb.write("{}Class {}:\n".format(
+            indent, names_from_ptrs.get(pclass.address, pclass.address)))
+        slist = intrusive_slist(pclass['_queue'], link='_hook')
+        for entry in slist:
+            gdb.write("{}\t{}\n".format(
+                indent, redpanda_io_queues.ticket(entry['_ticket'])))
+
+    def _get_classes_infos(self, ioq):
+        try:
+            return std_array(
+                gdb.parse_and_eval('seastar::io_priority_class::_infos'))
+        except gdb.error:
+            # Compatibility: io_queue::_registered_... stuff moved onto io_priority_class in version 4.6
+            return [{
+                'name': x[0],
+                'shares': x[1]
+            } for x in zip(std_array(ioq['_registered_names']),
+                           std_array(ioq['_registered_shares']))]
+
+    def invoke(self, arg, for_tty):
+        for dev, ioq in get_local_io_queues():
+            gdb.write("Dev {}:\n".format(dev))
+
+            infos = self._get_classes_infos(ioq)
+            pclasses = std_vector(ioq['_priority_classes'])
+
+            names_from_ptrs = {}
+
+            gdb.write("\t{:24}|{:16}|{:46}\n".format("Class:", "shares:",
+                                                     "ptr:"))
+            gdb.write("\t" + '-' * 64 + "\n")
+            for i, pclass in enumerate(pclasses):
+                pclass_ptr = std_unique_ptr(pclass).get()
+                names_from_ptrs[pclass_ptr] = infos[i]['name']
+                gdb.write("\t{:24}|{:16}|({:30}){:16}\n".format(
+                    str(infos[i]['name']), str(infos[i]['shares']),
+                    str(pclass_ptr.type), str(pclass_ptr)))
+            gdb.write("\n")
+
+            group = std_shared_ptr(ioq['_group']).get().dereference()
+            gdb.write("\tMax capacity:        {}\n".format(
+                self.ticket(group['_fg']['_maximum_capacity'])))
+            gdb.write("\tCapacity tail:       {}\n".format(
+                self.ticket(std_atomic(group['_fg']['_capacity_tail']).get())))
+            gdb.write("\tCapacity head:       {}\n".format(
+                self.ticket(std_atomic(group['_fg']['_capacity_head']).get())))
+            gdb.write("\n")
+
+            queue = ioq['_fq']
+            gdb.write("\tResources executing: {}\n".format(
+                self.ticket(queue['_resources_executing'])))
+            gdb.write("\tResources queued:    {}\n".format(
+                self.ticket(queue['_resources_queued'])))
+            handles = std_priority_queue(queue['_handles'])
+            gdb.write("\tHandles: ({})\n".format(len(handles)))
+            for pclass_ptr in handles:
+                pass
+                self._print_io_priority_class(pclass_ptr, names_from_ptrs)
+
+            pending = circular_buffer(ioq['_sink']['_pending_io'])
+            gdb.write("\tPending in sink: ({})\n".format(len(pending)))
+            for op in pending:
+                gdb.write("Completion {}\n".format(op['_completion']))
+
+
 redpanda()
 redpanda_memory()
-redpanda_rpc()
 redpanda_task_queues()
+redpanda_io_queues()
 redpanda_smp_queues()
 redpanda_small_objects()
 redpanda_task_histogram()

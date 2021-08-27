@@ -88,14 +88,25 @@ replicate_entries_stm::send_append_entries_request(
 
     auto opts = rpc::client_opts(append_entries_timeout());
     opts.resource_units = ss::make_foreign<ss::lw_shared_ptr<units_t>>(_units);
+    auto it = _ptr->_fstats.find(n);
+    if (it == _ptr->_fstats.end()) {
+        return ss::make_ready_future<result<append_entries_reply>>(
+          make_error_code(errc::append_entries_dispatch_error));
+    }
 
-    auto f = _ptr->_client_protocol
-               .append_entries(n.id(), std::move(req), std::move(opts))
-               .then([this](result<append_entries_reply> reply) {
-                   return _ptr->validate_reply_target_node(
-                     "append_entries_replicate", std::move(reply));
-               });
-    _dispatch_sem.signal();
+    auto f = ss::with_semaphore(
+      it->second._queue_depth,
+      1,
+      [this, req = std::move(req), opts = std::move(opts), n]() mutable {
+          _dispatch_sem.signal();
+          return _ptr->_client_protocol
+            .append_entries(n.id(), std::move(req), std::move(opts))
+            .then([this](result<append_entries_reply> reply) {
+                return _ptr->validate_reply_target_node(
+                  "append_entries_replicate", std::move(reply));
+            });
+      });
+
     return f
       .handle_exception([this](const std::exception_ptr& e) {
           vlog(_ctxlog.warn, "Error while replicating entries {}", e);
@@ -127,6 +138,10 @@ ss::future<> replicate_entries_stm::dispatch_one(vnode id) {
                        }
 
                        if (!reply) {
+                           vlog(
+                             _ctxlog.error,
+                             "replicate request failed - {}",
+                             reply.error().message());
                            _ptr->get_probe().replicate_request_error();
                        }
                        _ptr->process_append_entries_reply(

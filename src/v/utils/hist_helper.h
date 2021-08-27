@@ -50,6 +50,10 @@ public:
 
     hdr_hist& get_hist() { return _hist; }
 
+    std::unique_ptr<hdr_hist::measurement> auto_measure() {
+        return _hist.auto_measure();
+    }
+
 private:
     hdr_hist _hist;
     static thread_local ss::timer<> _printing_timer;

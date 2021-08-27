@@ -20,9 +20,12 @@
 #include <seastar/core/future-util.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/semaphore.hh>
+#include <seastar/core/sleep.hh>
 
 #include <fmt/format.h>
+#include <fmt/ostream.h>
 
+#include <chrono>
 #include <ostream>
 
 namespace storage {
@@ -411,6 +414,32 @@ ss::future<> segment_appender::process_flush_ops(size_t committed) {
     });
 }
 
+struct write_op {
+    ss::sstring name;
+    ss::lowres_clock::time_point start = ss::lowres_clock::now();
+
+    explicit write_op(ss::sstring name)
+      : name(std::move(name)) {}
+};
+
+static thread_local std::vector<ss::lw_shared_ptr<write_op>> writes;
+static thread_local ss::timer<ss::lowres_clock> writes_report([] {
+    std::sort(writes.begin(), writes.end(), [](auto a, auto b) {
+        return a->start < b->start;
+    });
+    int count = 0;
+    using namespace std::chrono_literals;
+    for (auto op : writes) {
+        auto diff = ss::lowres_clock::now() - op->start;
+
+        vlog(stlog.info, "AAA write {{{}}} age {} ms", op->name, diff / 1ms);
+
+        if (++count == 10) {
+            break;
+        }
+    }
+});
+
 void segment_appender::dispatch_background_head_write() {
     vassert(_head, "dispatching write requires active chunk");
     vassert(
@@ -435,7 +464,6 @@ void segment_appender::dispatch_background_head_write() {
     _inflight.emplace_back(
       ss::make_lw_shared<inflight_write>(_committed_offset));
     auto w = _inflight.back();
-
     /*
      * if _head is full then take control of it for this final write and then
      * release it back into the chunk cache. otherwise, leave it in place so
@@ -452,7 +480,9 @@ void segment_appender::dispatch_background_head_write() {
      */
     auto prev = _prev_head_write;
     auto units = ss::get_units(*prev, 1);
-
+    if (!writes_report.armed()) {
+        writes_report.arm_periodic(std::chrono::seconds(5));
+    }
     (void)ss::with_semaphore(
       _concurrent_flushes,
       1,
@@ -468,9 +498,12 @@ void segment_appender::dispatch_background_head_write() {
           return units
             .then([this, h, w, start_offset, expected, src, full](
                     ss::semaphore_units<> u) mutable {
+                auto wo = writes.emplace_back(
+                  ss::make_lw_shared<write_op>("dma-write"));
                 return _out
                   .dma_write(start_offset, src, expected, _opts.priority)
-                  .then([this, h, w, expected, full](size_t got) {
+                  .then([this, h, w, expected, full, wo](size_t got) {
+                      std::erase(writes, wo);
                       /*
                        * the continuation that captured full=true is the end of
                        * the dependency chain for this chunk. it can be returned
@@ -564,12 +597,45 @@ ss::future<> segment_appender::hard_flush() {
 }
 
 std::ostream& operator<<(std::ostream& o, const segment_appender& a) {
-    // NOTE: intrusivelist.size() == O(N) but often N is very small, ~8
-    return o << "{no_of_chunks:" << a._opts.number_of_chunks
-             << ", closed:" << a._closed
-             << ", fallocation_offset:" << a._fallocation_offset
-             << ", committed_offset:" << a._committed_offset
-             << ", bytes_flush_pending:" << a._bytes_flush_pending << "}";
+    std::stringstream str;
+    fmt::print(
+      str,
+      "{{ closed: {}, fallocation_offset: {}, commited_offset: {}, "
+      "head: {}, bytes_flush_pending: {}, concurrent_flushes_units: {}, "
+      "flushed_offset: {}, stable_offset: {}, flush_ops: [",
+      a._closed,
+      a._fallocation_offset,
+      a._committed_offset,
+      (bool)a._head,
+      a._bytes_flush_pending,
+      a._concurrent_flushes.available_units(),
+      a._flushed_offset,
+      a._stable_offset);
+
+    for (auto& o : a._flush_ops) {
+        fmt::print(str, "{{ offset: {} }}", o.offset);
+    }
+    fmt::print(str, "] inflight_sz: {}", a._inflight.size());
+
+    fmt::print(
+      str,
+      ", inflight_front: {{ offset: {}, done: {} }}",
+      a._inflight.front()->offset,
+      a._inflight.front()->done);
+
+    if (a._head) {
+        fmt::print(
+          str,
+          ", head: {{ head_bytes_pending: {}, flushed: {}, full: {}, empty: "
+          "{}}}",
+          a._head->bytes_pending(),
+          a._head->flushed_pos(),
+          a._head->is_full(),
+          a._head->is_empty());
+    }
+
+    fmt::print(str, " }}");
+    return o << str.str();
 }
 
 } // namespace storage

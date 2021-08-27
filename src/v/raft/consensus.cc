@@ -24,8 +24,10 @@
 #include "raft/rpc_client_protocol.h"
 #include "raft/types.h"
 #include "raft/vote_stm.h"
+#include "random/generators.h"
 #include "reflection/adl.h"
 #include "storage/api.h"
+#include "utils/hist_helper.h"
 #include "vlog.h"
 
 #include <seastar/core/coroutine.hh>
@@ -36,10 +38,11 @@
 #include <fmt/ostream.h>
 
 #include <algorithm>
+#include <chrono>
 #include <iterator>
 
 namespace raft {
-
+static thread_local uint64_t pending_in_buffer{0};
 consensus::consensus(
   model::node_id nid,
   group_id group,
@@ -81,6 +84,7 @@ consensus::consensus(
     setup_metrics();
     update_follower_stats(_configuration_manager.get_latest());
     _vote_timeout.set_callback([this] {
+        vlog(raftlog.info, "DBG: pending in buffer: {}", pending_in_buffer);
         maybe_step_down();
         dispatch_vote(false);
     });
@@ -1372,7 +1376,12 @@ ss::future<vote_reply> consensus::do_vote(vote_request&& r) {
 ss::future<append_entries_reply>
 consensus::append_entries(append_entries_request&& r) {
     return with_gate(_bg, [this, r = std::move(r)]() mutable {
-        return _append_requests_buffer.enqueue(std::move(r));
+        static thread_local hist_helper h{"raft-append-enqueue"};
+        auto m = h.auto_measure();
+
+        pending_in_buffer++;
+        return _append_requests_buffer.enqueue(std::move(r))
+          .finally([m = std::move(m)] { pending_in_buffer--; });
     });
 }
 

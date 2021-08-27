@@ -88,6 +88,11 @@ public:
                 "latency",
                 [this] { return _methods[{{loop.index-1}}].probes.latency_hist().seastar_histogram_logform(); },
                 sm::description("Internal RPC service latency"),
+                labels),
+            sm::make_gauge(
+                "pending",
+                [this] { return _methods[{{loop.index-1}}].probes.pending_requests(); },
+                sm::description("Internal RPC pending requests"),
                 labels)});
         }
       {%- endfor %}

@@ -154,6 +154,7 @@ struct follower_index_metadata {
      */
     heartbeats_suppressed suppress_heartbeats = heartbeats_suppressed::no;
     follower_req_seq last_suppress_heartbeats_seq{0};
+    ss::semaphore _queue_depth{5};
 };
 /**
  * class containing follower statistics, this may be helpful for debugging,

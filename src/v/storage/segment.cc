@@ -35,6 +35,8 @@
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/smp.hh>
 
+#include <fmt/core.h>
+
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -238,9 +240,10 @@ void segment::release_appender_in_background(readers_cache* readers_cache) {
 struct flush_op {
     ss::sstring name;
     ss::lowres_clock::time_point start = ss::lowres_clock::now();
-
-    explicit flush_op(ss::sstring name)
-      : name(std::move(name)) {}
+    segment_appender* ap;
+    explicit flush_op(ss::sstring name, segment_appender* ap)
+      : name(std::move(name))
+      , ap(ap) {}
 };
 
 static thread_local std::vector<ss::lw_shared_ptr<flush_op>> flushes;
@@ -249,14 +252,19 @@ static thread_local ss::timer<ss::lowres_clock> flushes_report([] {
         return a->start < b->start;
     });
     int count = 0;
+    using namespace std::chrono_literals;
     for (auto op : flushes) {
-        vlog(
-          stlog.info,
-          "XXX flush {{{}}} age {}ms",
-          op->name,
-          std::chrono::duration_cast<std::chrono::milliseconds>(
-            ss::lowres_clock::now() - op->start)
-            .count());
+        auto diff = ss::lowres_clock::now() - op->start;
+
+        vlog(stlog.info, "XXX flush {{{}}} age {}ms", op->name, diff / 1ms);
+        if (diff / 1s > 5) {
+            vlog(
+              stlog.info,
+              "XXXX appender {{{}}} age {}ms - {}",
+              op->name,
+              diff / 1ms,
+              *(op->ap));
+        }
         if (++count == 10) {
             break;
         }
@@ -265,10 +273,7 @@ static thread_local ss::timer<ss::lowres_clock> flushes_report([] {
 
 ss::future<> segment::flush() {
     check_segment_not_closed("flush()");
-    auto outer = ss::make_lw_shared<flush_op>("outer");
-    flushes.push_back(outer);
-    return read_lock().then([this, outer](ss::rwlock::holder h) {
-        std::erase(flushes, outer);
+    return read_lock().then([this](ss::rwlock::holder h) {
         return do_flush().finally([h = std::move(h)] {});
     });
 }
@@ -280,7 +285,8 @@ ss::future<> segment::do_flush() {
     if (!_appender) {
         return ss::make_ready_future<>();
     }
-    auto inner = ss::make_lw_shared<flush_op>("inner");
+    auto inner = ss::make_lw_shared<flush_op>(
+      fmt::format("inner-{}", _reader.filename()), _appender.get());
     flushes.push_back(inner);
     auto o = _tracker.dirty_offset;
     auto fsize = _appender->file_byte_offset();

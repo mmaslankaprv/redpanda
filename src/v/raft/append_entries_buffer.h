@@ -146,7 +146,6 @@ private:
     response_t _responses;
     ss::condition_variable _enqueued;
     ss::gate _gate;
-    ss::condition_variable _flushed;
     const size_t _max_buffered;
 };
 

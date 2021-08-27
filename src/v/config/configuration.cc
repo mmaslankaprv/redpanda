@@ -467,7 +467,7 @@ configuration::configuration()
       "replicate_append_timeout_ms",
       "Timeout for append entries requests issued while replicating entries",
       required::no,
-      3s)
+      5s)
   , recovery_append_timeout_ms(
       *this,
       "recovery_append_timeout_ms",

@@ -212,7 +212,14 @@ public:
     hdr_hist& latency_hist() { return _latency_hist; }
     const hdr_hist& latency_hist() const { return _latency_hist; }
 
+    void started() { _started++; }
+    void finished() { _finished++; }
+
+    uint64_t pending_requests() const { return _started - _finished; }
+
 private:
+    uint64_t _started{0};
+    uint64_t _finished{0};
     // roughly 2024 bytes
     hdr_hist _latency_hist{120s, 1ms};
 };
