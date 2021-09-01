@@ -370,6 +370,10 @@ ss::future<> controller_backend::reconcile_ntp(deltas_t& deltas) {
     bool stop = false;
     auto it = deltas.begin();
     while (!(stop || it == deltas.end())) {
+        // break if we are requested to stop
+        if (_as.local().abort_requested()) {
+            break;
+        }
         try {
             auto ec = co_await execute_partitition_op(*it);
             if (ec) {
