@@ -12,6 +12,7 @@
 #pragma once
 
 #include "model/metadata.h"
+#include "model/record.h"
 #include "outcome.h"
 #include "raft/logger.h"
 #include "storage/snapshot.h"
@@ -26,12 +27,15 @@ public:
 private:
     ss::future<> recover();
     ss::future<> do_recover(ss::io_priority_class);
-    ss::future<> read_range_for_recovery(
-      model::offset, model::offset, model::offset, ss::io_priority_class, bool);
+
+    ss::future<ss::circular_buffer<model::record_batch>>
+    read_range_for_recovery(model::offset, ss::io_priority_class, bool);
     ss::future<> replicate(
       model::record_batch_reader&&, append_entries_request::flush_after_append);
+
     ss::future<result<append_entries_reply>>
     dispatch_append_entries(append_entries_request&&);
+
     std::optional<follower_index_metadata*> get_follower_meta();
     clock_type::time_point append_entries_timeout();
 
