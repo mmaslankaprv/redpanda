@@ -34,7 +34,7 @@ var (
 	noCompression = flag.Bool("no-compression", false, "set to disable compression (alias for -compression none, producing)")
 	compression   = flag.String("compression", "snappy", "compression algorithm to use (none,gzip,snappy,lz4,zstd, for producing)")
 	poolProduce   = flag.Bool("pool", false, "if true, use a sync.Pool to reuse record structs/slices (producing)")
-	noIdempotency = flag.Bool("disable-idempotency", false, "if true, disable idempotency (force 1 produce rps)")
+	noIdempotency = flag.Bool("disable-idempotency", true, "if true, disable idempotency (force 1 produce rps)")
 	linger        = flag.Duration("linger", 0, "if non-zero, linger to use when producing")
 	batchMaxBytes = flag.Int("batch-max-bytes", 1000000, "the maximum batch size to allow per-partition (must be less than Kafka's max.message.bytes, producing)")
 
@@ -69,6 +69,12 @@ func die(msg string, args ...interface{}) {
 func chk(err error, msg string, args ...interface{}) {
 	if err != nil {
 		die(msg, args...)
+	}
+}
+
+func log_err(err error, msg string, args ...interface{}) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, msg+"\n", args...)
 	}
 }
 
@@ -183,15 +189,10 @@ func main() {
 		}
 	}
 
+	opts = append(opts, kgo.RequiredAcks(kgo.AllISRAcks()))
+
 	cl, err := kgo.NewClient(opts...)
 	chk(err, "unable to initialize client: %v", err)
-
-	if *pprofPort != "" {
-		go func() {
-			err := http.ListenAndServe(*pprofPort, nil)
-			chk(err, "unable to run pprof listener: %v", err)
-		}()
-	}
 
 	go printRate()
 
@@ -205,9 +206,13 @@ func main() {
 				} else if *poolProduce {
 					p.Put(r)
 				}
-				chk(err, "produce error: %v", err)
-				atomic.AddInt64(&rateRecs, 1)
-				atomic.AddInt64(&rateBytes, int64(*recordBytes))
+				if err == nil {
+					fmt.Printf("ack,%d,%d,%v\n", r.Partition, r.Offset, string(r.Value[:]))
+					atomic.AddInt64(&rateRecs, 1)
+					atomic.AddInt64(&rateBytes, int64(*recordBytes))
+				} else {
+					fmt.Printf("err,%d,%v", r.Partition, err)
+				}
 			})
 			num++
 		}
@@ -215,11 +220,13 @@ func main() {
 		for {
 			fetches := cl.PollFetches(context.Background())
 			fetches.EachError(func(t string, p int32, err error) {
-				chk(err, "topic %s partition %d had error: %v", t, p, err)
+				fmt.Printf("err,%d,%v", p, err)
+
 			})
 			var recs int64
 			var bytes int64
 			fetches.EachRecord(func(r *kgo.Record) {
+				fmt.Printf("ack,%d,%d,%v\n", r.Partition, r.Offset, string(r.Value[:]))
 				recs++
 				bytes += int64(len(r.Value))
 			})
@@ -242,9 +249,8 @@ func newRecord(num int64) *kgo.Record {
 	} else if *poolProduce {
 		r = p.Get().(*kgo.Record)
 	} else {
-		r = kgo.SliceRecord(make([]byte, *recordBytes))
+		r = kgo.StringRecord(strconv.FormatInt(num, 10))
 	}
-	formatValue(num, r.Value)
 	return r
 }
 
