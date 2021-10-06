@@ -154,6 +154,16 @@ std::ostream& operator<<(std::ostream& o, const install_snapshot_reply& r) {
     return o;
 }
 
+std::ostream& operator<<(std::ostream& o, const append_entries_reply_ctx& ctx) {
+    switch (ctx) {
+    case append_entries_reply_ctx::heartbeat:
+        return o << "heartbeat";
+    case append_entries_reply_ctx::dispatcher:
+        return o << "replicate";
+    };
+    return o << "unknown";
+}
+
 } // namespace raft
 
 namespace reflection {

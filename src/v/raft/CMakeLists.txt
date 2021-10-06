@@ -15,12 +15,10 @@ v_cc_library(
     configuration_bootstrap_state.cc
     logger.cc
     types.cc
-    replicate_entries_stm.cc
     vote_stm.cc
     prevote_stm.cc
     recovery_stm.cc
     follower_stats.cc
-    replicate_batcher.cc
     rpc_client_protocol.cc
     group_manager.cc
     probe.cc

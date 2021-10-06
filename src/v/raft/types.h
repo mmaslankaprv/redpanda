@@ -246,6 +246,13 @@ struct append_entries_reply {
     status result = status::failure;
 };
 
+/**
+ * Redpanda raft implemetation treat heartbeats differetntly than other append
+ * entries requests. Heartbeats do not truncate follower logs. This force us to
+ * process heartbeat responses in a different way than other responses.
+ */
+enum class append_entries_reply_ctx : int8_t { heartbeat = 0, dispatcher = 1 };
+
 struct heartbeat_metadata {
     protocol_metadata meta;
     vnode node_id;
@@ -527,6 +534,7 @@ std::ostream& operator<<(std::ostream& o, const vote_request& r);
 std::ostream& operator<<(std::ostream& o, const follower_index_metadata& i);
 std::ostream& operator<<(std::ostream& o, const heartbeat_request& r);
 std::ostream& operator<<(std::ostream& o, const heartbeat_reply& r);
+std::ostream& operator<<(std::ostream& o, const append_entries_reply_ctx&);
 } // namespace raft
 
 namespace reflection {

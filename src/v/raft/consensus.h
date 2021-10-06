@@ -26,7 +26,6 @@
 #include "raft/prevote_stm.h"
 #include "raft/probe.h"
 #include "raft/recovery_throttle.h"
-#include "raft/replicate_batcher.h"
 #include "raft/timeout_jitter.h"
 #include "raft/types.h"
 #include "rpc/connection_cache.h"
@@ -169,6 +168,7 @@ public:
 
     void process_append_entries_reply(
       model::node_id,
+      append_entries_reply_ctx,
       result<append_entries_reply>,
       follower_req_seq,
       model::offset);
@@ -331,7 +331,6 @@ private:
     friend vote_stm;
     friend prevote_stm;
     friend recovery_stm;
-    friend replicate_batcher;
     friend event_manager;
     friend append_entries_buffer;
     using update_last_quorum_index
@@ -346,10 +345,6 @@ private:
     do_install_snapshot(install_snapshot_request&& r);
     ss::future<> do_start();
 
-    ss::future<result<replicate_result>> dispatch_replicate(
-      append_entries_request,
-      std::vector<ss::semaphore_units<>>,
-      absl::flat_hash_map<vnode, follower_req_seq>);
     /**
      * Hydrate the consensus state with the data from the snapshot
      */
@@ -371,11 +366,15 @@ private:
       std::optional<model::term_id>,
       model::record_batch_reader&&,
       replicate_options);
-    ss::future<result<replicate_result>> do_append_replicate_relaxed(
+
+    ss::future<result<replicate_result>> do_replicate_with_lock(
       std::optional<model::term_id>,
       model::record_batch_reader,
       consistency_level,
       ss::semaphore_units<>);
+
+    ss::future<result<replicate_result>> handle_append_result(
+      storage::append_result, consistency_level, ss::semaphore_units<>);
 
     ss::future<storage::append_result>
     disk_append(model::record_batch_reader&&, update_last_quorum_index);
@@ -384,15 +383,12 @@ private:
 
     success_reply update_follower_index(
       model::node_id,
+      append_entries_reply_ctx,
       const result<append_entries_reply>&,
       follower_req_seq seq_id,
       model::offset);
 
-    void successfull_append_entries_reply(
-      follower_index_metadata&, append_entries_reply);
-
     bool needs_recovery(const follower_index_metadata&, model::offset);
-    void dispatch_recovery(follower_index_metadata&);
     void maybe_update_leader_commit_idx();
     ss::future<> do_maybe_update_leader_commit_idx(ss::semaphore_units<>);
 
@@ -425,7 +421,7 @@ private:
     ss::future<> flush_log();
     /// \brief called by the vote timer, to dispatch a write under
     /// the ops semaphore
-    void dispatch_flush_with_lock();
+    void flush_in_background(ss::semaphore_units<>);
 
     void maybe_step_down();
 
@@ -552,7 +548,6 @@ private:
     /// used for keepint tally on followers
     follower_stats _fstats;
 
-    replicate_batcher _batcher;
     bool _has_pending_flushes{false};
 
     /// used to wait for background ops before shutting down
@@ -594,6 +589,7 @@ private:
     ss::condition_variable _disk_append;
     ss::condition_variable _follower_reply;
     append_entries_buffer _append_requests_buffer;
+    absl::node_hash_map<vnode, std::unique_ptr<recovery_stm>> _dispatchers;
     friend std::ostream& operator<<(std::ostream&, const consensus&);
 };
 

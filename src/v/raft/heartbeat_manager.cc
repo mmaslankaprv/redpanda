@@ -254,6 +254,7 @@ void heartbeat_manager::process_reply(
             // propagate error
             (*it)->process_append_entries_reply(
               n,
+              append_entries_reply_ctx::heartbeat,
               result<append_entries_reply>(r.error()),
               req_meta.seq,
               req_meta.dirty_offset);
@@ -274,6 +275,7 @@ void heartbeat_manager::process_reply(
           meta.follower_vnode, meta.seq, heartbeats_suppressed::no);
         (*it)->process_append_entries_reply(
           n,
+          append_entries_reply_ctx::heartbeat,
           result<append_entries_reply>(std::move(m)),
           meta.seq,
           meta.dirty_offset);

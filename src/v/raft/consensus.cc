@@ -20,7 +20,6 @@
 #include "raft/logger.h"
 #include "raft/prevote_stm.h"
 #include "raft/recovery_stm.h"
-#include "raft/replicate_entries_stm.h"
 #include "raft/rpc_client_protocol.h"
 #include "raft/types.h"
 #include "raft/vote_stm.h"
@@ -64,7 +63,6 @@ consensus::consensus(
       _self,
       config::shard_local_cfg()
         .raft_max_concurrent_append_requests_per_follower())
-  , _batcher(this, config::shard_local_cfg().raft_replicate_batch_window_size())
   , _event_manager(this)
   , _ctxlog(group, _log.config().ntp())
   , _replicate_append_timeout(
@@ -157,10 +155,12 @@ void consensus::shutdown_input() {
 ss::future<> consensus::stop() {
     vlog(_ctxlog.info, "Stopping");
     shutdown_input();
+    for (auto& [_, d] : _dispatchers) {
+        d->stop();
+    }
 
     return _event_manager.stop()
       .then([this] { return _append_requests_buffer.stop(); })
-      .then([this] { return _batcher.stop(); })
       .then([this] { return _bg.close(); })
       .then([this] {
           // close writer if we have to
@@ -174,9 +174,10 @@ ss::future<> consensus::stop() {
 
 consensus::success_reply consensus::update_follower_index(
   model::node_id physical_node,
+  append_entries_reply_ctx,
   const result<append_entries_reply>& r,
   follower_req_seq seq,
-  model::offset dirty_offset) {
+  model::offset) {
     // do not process replies when stoping
     if (unlikely(_as.abort_requested())) {
         return success_reply::no;
@@ -282,51 +283,36 @@ consensus::success_reply consensus::update_follower_index(
         return success_reply::no;
     }
 
-    // If recovery is in progress the recovery STM will handle follower index
-    // updates
-    if (!idx.is_recovering) {
-        vlog(
-          _ctxlog.trace,
-          "Updated node {} last committed log index: {}",
-          idx.node_id,
-          reply.last_committed_log_index);
-        idx.last_dirty_log_index = reply.last_dirty_log_index;
-        idx.last_committed_log_index = reply.last_committed_log_index;
-        idx.next_index = details::next_offset(idx.last_dirty_log_index);
+    vlog(
+      _ctxlog.trace,
+      "Updated node {} last committed log index: {}",
+      idx.node_id,
+      reply.last_committed_log_index);
+
+    const auto prev_dirty_offset = std::exchange(
+      idx.last_dirty_log_index, reply.last_dirty_log_index);
+    idx.last_committed_log_index = reply.last_committed_log_index;
+
+    // if follower dirty log index moved back from some reason
+    // (i.e. truncation, data loss, trigger recovery)
+    if (prev_dirty_offset > reply.last_dirty_log_index) {
+        idx.match_index = std::min(idx.last_dirty_log_index, idx.match_index);
+        idx.follower_state_change.broadcast();
+        return success_reply::no;
     }
 
     if (reply.result == append_entries_reply::status::success) {
-        successfull_append_entries_reply(idx, std::move(reply));
+        idx.match_index = idx.last_dirty_log_index;
+        vlog(
+          _ctxlog.trace,
+          "Updated node {} match {} index",
+          idx.node_id,
+          idx.match_index);
+
         return success_reply::yes;
     }
 
-    if (idx.is_recovering) {
-        // we are already recovering, if follower dirty log index moved back
-        // from some reason (i.e. truncation, data loss, trigger recovery)
-        if (idx.last_dirty_log_index > reply.last_dirty_log_index) {
-            // update follower state to allow recovery of follower with
-            // missing entries
-            idx.last_dirty_log_index = reply.last_dirty_log_index;
-            idx.last_committed_log_index = reply.last_committed_log_index;
-            idx.next_index = details::next_offset(idx.last_dirty_log_index);
-            idx.follower_state_change.broadcast();
-        }
-        return success_reply::no;
-    }
-
-    if (needs_recovery(idx, dirty_offset)) {
-        vlog(
-          _ctxlog.trace,
-          "Starting recovery process for {} - current reply: {}",
-          idx.node_id,
-          reply);
-        dispatch_recovery(idx);
-        return success_reply::no;
-    }
     return success_reply::no;
-    // TODO(agallego) - add target_replication_factor,
-    // current_replication_factor to group_configuration so we can promote
-    // learners to nodes and perform data movement to added replicas
 }
 
 void consensus::maybe_promote_to_voter(vnode id) {
@@ -372,11 +358,12 @@ void consensus::maybe_promote_to_voter(vnode id) {
 
 void consensus::process_append_entries_reply(
   model::node_id physical_node,
+  append_entries_reply_ctx ctx,
   result<append_entries_reply> r,
   follower_req_seq seq_id,
   model::offset dirty_offset) {
     auto is_success = update_follower_index(
-      physical_node, r, seq_id, dirty_offset);
+      physical_node, ctx, r, seq_id, dirty_offset);
     if (is_success) {
         maybe_promote_to_voter(r.value().node_id);
         maybe_update_majority_replicated_index();
@@ -385,56 +372,12 @@ void consensus::process_append_entries_reply(
     }
 }
 
-void consensus::successfull_append_entries_reply(
-  follower_index_metadata& idx, append_entries_reply reply) {
-    // follower and leader logs matches
-    idx.last_dirty_log_index = reply.last_dirty_log_index;
-    idx.last_committed_log_index = reply.last_committed_log_index;
-    idx.match_index = idx.last_dirty_log_index;
-    idx.next_index = details::next_offset(idx.last_dirty_log_index);
-    vlog(
-      _ctxlog.trace,
-      "Updated node {} match {} and next {} indices",
-      idx.node_id,
-      idx.match_index,
-      idx.next_index);
-}
-
 bool consensus::needs_recovery(
   const follower_index_metadata& idx, model::offset dirty_offset) {
     // follower match_index is behind, we have to recover it
 
     return idx.match_index < dirty_offset
            || idx.match_index > idx.last_dirty_log_index;
-}
-
-void consensus::dispatch_recovery(follower_index_metadata& idx) {
-    auto lstats = _log.offsets();
-    auto log_max_offset = lstats.dirty_offset;
-    if (idx.last_dirty_log_index >= log_max_offset) {
-        // follower is ahead of current leader
-        // try to send last batch that leader have
-        vlog(
-          _ctxlog.trace,
-          "Follower {} is ahead of the leader setting next offset to {}",
-          idx.next_index,
-          log_max_offset);
-        idx.next_index = log_max_offset;
-    }
-    idx.is_recovering = true;
-    // background
-    (void)with_gate(_bg, [this, node_id = idx.node_id] {
-        auto recovery = std::make_unique<recovery_stm>(
-          this, node_id, _scheduling);
-        auto ptr = recovery.get();
-        return ptr->apply()
-          .handle_exception([this, node_id](const std::exception_ptr& e) {
-              vlog(_ctxlog.warn, "Node {} recovery failed - {}", node_id, e);
-          })
-          .finally([r = std::move(recovery)] {});
-    }).handle_exception([this](const std::exception_ptr& e) {
-        vlog(_ctxlog.warn, "Recovery error - {}", e);
-    });
 }
 
 ss::future<result<model::offset>> consensus::linearizable_barrier() {
@@ -479,16 +422,21 @@ ss::future<result<model::offset>> consensus::linearizable_barrier() {
         update_node_append_timestamp(target);
         vlog(
           _ctxlog.trace, "Sending empty append entries request to {}", target);
-        auto f
-          = _client_protocol
-              .append_entries(
-                target.id(),
-                std::move(req),
-                rpc::client_opts(_replicate_append_timeout + clock_type::now()))
-              .then([this, id = target.id(), seq, dirty_offset](
-                      result<append_entries_reply> reply) {
-                  process_append_entries_reply(id, reply, seq, dirty_offset);
-              });
+        auto f = _client_protocol
+                   .append_entries(
+                     target.id(),
+                     std::move(req),
+                     rpc::client_opts(
+                       _replicate_append_timeout + clock_type::now()))
+                   .then([this, id = target.id(), seq, dirty_offset](
+                           result<append_entries_reply> reply) {
+                       process_append_entries_reply(
+                         id,
+                         append_entries_reply_ctx::heartbeat,
+                         reply,
+                         seq,
+                         dirty_offset);
+                   });
 
         send_futures.push_back(std::move(f));
     });
@@ -610,19 +558,18 @@ replicate_stages consensus::do_replicate(
     if (!is_leader() || unlikely(_transferring_leadership)) {
         return replicate_stages(errc::not_leader);
     }
-
-    if (opts.consistency == consistency_level::quorum_ack) {
+    switch (opts.consistency) {
+    case consistency_level::quorum_ack:
         _probe.replicate_requests_ack_all();
-
-        return wrap_stages_with_gate(
-          _bg, _batcher.replicate(expected_term, std::move(rdr)));
-    }
-
-    if (opts.consistency == consistency_level::leader_ack) {
+        break;
+    case consistency_level::leader_ack:
         _probe.replicate_requests_ack_leader();
-    } else {
+        break;
+    case consistency_level::no_ack:
         _probe.replicate_requests_ack_none();
+        break;
     }
+
     // For relaxed consistency, append data to leader disk without flush
     // asynchronous replication is provided by Raft protocol recovery mechanism.
 
@@ -636,62 +583,99 @@ replicate_stages consensus::do_replicate(
        enqueued = std::move(enqueued),
        lvl = opts.consistency,
        rdr = std::move(rdr)](ss::future<ss::semaphore_units<>> f) mutable {
-          if (!f.failed()) {
-              enqueued.set_value();
-              return do_append_replicate_relaxed(
-                expected_term, std::move(rdr), lvl, f.get());
+          if (f.failed()) {
+              enqueued.set_exception(f.get_exception());
+              return ss::make_ready_future<ret_t>(errc::leader_append_failed);
           }
-          enqueued.set_exception(f.get_exception());
-          return ss::make_ready_future<ret_t>(errc::leader_append_failed);
+          enqueued.set_value();
+          return do_replicate_with_lock(
+            expected_term, std::move(rdr), lvl, f.get());
       });
 
     return wrap_stages_with_gate(
       _bg, replicate_stages(std::move(enqueued_f), std::move(replicated)));
 }
 
-ss::future<result<replicate_result>> consensus::do_append_replicate_relaxed(
+ss::future<result<replicate_result>> consensus::do_replicate_with_lock(
   std::optional<model::term_id> expected_term,
   model::record_batch_reader rdr,
   consistency_level lvl,
   ss::semaphore_units<> u) {
-    using ret_t = result<replicate_result>;
     if (!is_leader()) {
-        return seastar::make_ready_future<ret_t>(errc::not_leader);
+        co_return errc::not_leader;
     }
 
     if (expected_term.has_value() && expected_term.value() != _term) {
-        return seastar::make_ready_future<ret_t>(errc::not_leader);
+        co_return errc::not_leader;
     }
+    auto update_last_replicated_quorum = lvl == consistency_level::quorum_ack
+                                           ? update_last_quorum_index::yes
+                                           : update_last_quorum_index::no;
     _last_write_consistency_level = lvl;
-    return disk_append(
-             model::make_record_batch_reader<details::term_assigning_reader>(
-               std::move(rdr), model::term_id(_term)),
-             update_last_quorum_index::no)
-      .then([this](storage::append_result res) {
-          // only update visibility upper bound if all quorum
-          // replicated entries are committed already
-          if (_commit_index >= _last_quorum_replicated_index) {
-              // for relaxed consistency mode update visibility
-              // upper bound with last offset appended to the log
-              _visibility_upper_bound_index = std::max(
-                _visibility_upper_bound_index, res.last_offset);
-              maybe_update_majority_replicated_index();
-          }
-          return ret_t(replicate_result{.last_offset = res.last_offset});
-      })
-      .finally([this, u = std::move(u)] { _probe.replicate_done(); });
+    auto result = co_await disk_append(
+      model::make_record_batch_reader<details::term_assigning_reader>(
+        std::move(rdr), model::term_id(_term)),
+      update_last_replicated_quorum);
+
+    co_return co_await handle_append_result(result, lvl, std::move(u));
+    _probe.replicate_done();
 }
 
-void consensus::dispatch_flush_with_lock() {
-    if (!_has_pending_flushes) {
-        return;
+ss::future<result<replicate_result>> consensus::handle_append_result(
+  storage::append_result res,
+  consistency_level c_lvl,
+  ss::semaphore_units<> u) {
+    using ret_t = result<replicate_result>;
+    // only update visibility upper bound if all quorum
+    // replicated entries are committed already
+    if (_commit_index >= _last_quorum_replicated_index) {
+        // for relaxed consistency mode update visibility
+        // upper bound with last offset appended to the log
+        _visibility_upper_bound_index = std::max(
+          _visibility_upper_bound_index, res.last_offset);
+        maybe_update_majority_replicated_index();
     }
-    (void)ss::with_gate(_bg, [this] {
-        return _op_lock.with([this] {
-            if (!_has_pending_flushes) {
-                return ss::make_ready_future<>();
-            }
-            return flush_log();
+
+    // do not wait for committed index when using relaxed consistency mode
+    if (c_lvl != consistency_level::quorum_ack) {
+        co_return ret_t(replicate_result{.last_offset = res.last_offset});
+    }
+
+    // TODO: coalesce flushes
+    flush_in_background(std::move(u));
+    // this is happening outside of _opsem
+    // store offset and term of an appended entry
+    const auto appended_offset = res.last_offset;
+    const auto appended_term = res.last_term;
+    /**
+     * we have to finish replication when committed offset
+     * is greater or equal to the appended offset or when
+     * term have changed after commit_index update, if that
+     * happend it means that entry might have been either
+     * commited or truncated
+     */
+    auto stop_cond = [this, appended_offset, appended_term] {
+        return _commit_index >= appended_offset || _term > appended_term;
+    };
+    co_return co_await _commit_index_updated.wait(stop_cond).then(
+      [this, appended_offset, appended_term] {
+          if (unlikely(appended_term != _term)) {
+              if (_log.get_term(appended_offset) != appended_term) {
+                  return ret_t(errc::replicated_entry_truncated);
+              }
+          }
+          return ret_t(replicate_result{.last_offset = appended_offset});
+      });
+}
+
+void consensus::flush_in_background(ss::semaphore_units<> u) {
+    (void)ss::with_gate(_bg, [this, u = std::move(u)]() mutable {
+        if (!_has_pending_flushes) {
+            return ss::now();
+        }
+        return flush_log().then([this, u = std::move(u)]() mutable {
+            u.return_all();
+            maybe_update_leader_commit_idx();
         });
     });
 }
@@ -1882,52 +1866,19 @@ ss::future<std::error_code> consensus::replicate_configuration(
           for (auto& b : batches) {
               b.set_term(model::term_id(_term));
           }
-          auto seqs = next_followers_request_seq();
-          append_entries_request req(
-            _self,
-            meta(),
-            model::make_memory_record_batch_reader(std::move(batches)));
-          /**
-           * We use dispatch_replicate directly as we already hold the
-           * _op_lock mutex when replicating configuration
-           */
-          std::vector<ss::semaphore_units<>> units;
-          units.push_back(std::move(u));
-          return dispatch_replicate(
-                   std::move(req), std::move(units), std::move(seqs))
+
+          return do_replicate_with_lock(
+                   {},
+                   model::make_memory_record_batch_reader(std::move(batches)),
+                   consistency_level::quorum_ack,
+                   std::move(u))
             .then([](result<replicate_result> res) {
-                if (res) {
-                    return make_error_code(errc::success);
+                if (res.has_error()) {
+                    return res.error();
                 }
-                return res.error();
+                return make_error_code(errc::success);
             });
       });
-}
-
-ss::future<result<replicate_result>> consensus::dispatch_replicate(
-  append_entries_request req,
-  std::vector<ss::semaphore_units<>> u,
-  absl::flat_hash_map<vnode, follower_req_seq> seqs) {
-    auto stm = ss::make_lw_shared<replicate_entries_stm>(
-      this, std::move(req), std::move(seqs));
-
-    return stm->apply(std::move(u)).finally([this, stm] {
-        auto f = stm->wait().finally([stm] {});
-        // if gate is closed wait for all futures
-        if (_bg.is_closed()) {
-            _ctxlog.info("gate-closed, waiting to finish background requests");
-            return f;
-        }
-        // background
-        (void)with_gate(_bg, [this, stm, f = std::move(f)]() mutable {
-            return std::move(f).handle_exception(
-              [this](const std::exception_ptr& e) {
-                  _ctxlog.error(
-                    "Error waiting for background acks to finish - {}", e);
-              });
-        });
-        return ss::now();
-    });
 }
 
 append_entries_reply consensus::make_append_entries_reply(
@@ -2210,6 +2161,13 @@ consensus::maybe_update_follower_commit_idx(model::offset request_commit_idx) {
 void consensus::update_follower_stats(const group_configuration& cfg) {
     vlog(_ctxlog.trace, "Updating follower stats with config {}", cfg);
     _fstats.update_with_configuration(cfg);
+    cfg.for_each_broker_id([this](vnode node) {
+        if (node == _self || _dispatchers.contains(node)) {
+            return;
+        }
+        _dispatchers.emplace(
+          node, std::make_unique<recovery_stm>(this, node, _scheduling));
+    });
 }
 
 void consensus::trigger_leadership_notification() {
@@ -2218,6 +2176,9 @@ void consensus::trigger_leadership_notification() {
       .term = model::term_id(_term),
       .group = group_id(_group),
       .current_leader = _leader_id});
+    for (auto& [_, dispatcher] : _dispatchers) {
+        dispatcher->notify_leadership_changed();
+    }
 }
 
 std::ostream& operator<<(std::ostream& o, const consensus& c) {
@@ -2432,11 +2393,6 @@ consensus::do_transfer_leadership(std::optional<model::node_id> target) {
               make_error_code(errc::node_does_not_exists));
         }
         auto& meta = _fstats.get(target_rni);
-        if (
-          !meta.is_recovering
-          && needs_recovery(meta, _log.offsets().dirty_offset)) {
-            dispatch_recovery(meta); // sets is_recovering flag
-        }
 
         auto f = ss::now();
         if (meta.is_recovering) {

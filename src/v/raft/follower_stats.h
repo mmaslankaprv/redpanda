@@ -13,6 +13,7 @@
 
 #include "model/metadata.h"
 #include "raft/follower_queue.h"
+#include "raft/recovery_stm.h"
 #include "raft/types.h"
 #include "vassert.h"
 

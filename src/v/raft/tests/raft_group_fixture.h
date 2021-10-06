@@ -205,8 +205,8 @@ struct raft_node {
 
         tstlog.info("Stopping node stack {}", broker.id());
         _as.request_abort();
-        return recovery_throttle.stop()
-          .then([this] { return server.stop(); })
+
+        return server.stop()
           .then([this] {
               if (hbeats) {
                   tstlog.info("Stopping heartbets manager at {}", broker.id());
@@ -219,6 +219,7 @@ struct raft_node {
               tstlog.info("Stopping raft at {}", broker.id());
               return consensus->stop();
           })
+          .then([this] { return recovery_throttle.stop(); })
           .then([this] {
               if (_nop_stm != nullptr) {
                   return _nop_stm->stop();
@@ -629,7 +630,7 @@ static bool assert_all_logs_are_the_same(const raft_group::logs_t& logs) {
 static void validate_logs_replication(raft_group& gr) {
     auto logs = gr.read_all_logs();
     wait_for(
-      10s,
+      20s,
       [&gr, &logs] {
           logs = gr.read_all_logs();
           return are_logs_the_same_length(logs);

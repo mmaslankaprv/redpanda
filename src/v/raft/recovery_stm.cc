@@ -17,7 +17,9 @@
 #include "raft/errc.h"
 #include "raft/logger.h"
 #include "raft/raftgen_service.h"
+#include "ssx/sformat.h"
 
+#include <seastar/core/condition-variable.hh>
 #include <seastar/core/coroutine.hh>
 #include <seastar/core/future-util.hh>
 #include <seastar/core/io_priority_class.hh>
@@ -32,11 +34,15 @@ recovery_stm::recovery_stm(
   consensus* p, vnode node_id, scheduling_config scheduling)
   : _ptr(p)
   , _node_id(node_id)
-  , _term(_ptr->term())
   , _scheduling(scheduling)
-  , _ctxlog(_ptr->_ctxlog) {}
+  , _ctxlog(
+      raftlog,
+      ssx::sformat(
+        "[group_id:{}, {}][f: {}]", _ptr->group(), _ptr->ntp(), node_id)) {
+    start();
+}
 
-ss::future<> recovery_stm::recover() {
+ss::future<> recovery_stm::dispatch() {
     auto meta = get_follower_meta();
     if (!meta) {
         // stop recovery when node was removed
@@ -49,10 +55,21 @@ ss::future<> recovery_stm::recover() {
                                          : _scheduling.default_iopc;
 
     return ss::with_scheduling_group(
-      sg, [this, iopc] { return do_recover(iopc); });
+      sg, [this, iopc] { return do_dispatch(iopc); });
 }
 
-ss::future<> recovery_stm::do_recover(ss::io_priority_class iopc) {
+void recovery_stm::stop() {
+    _stop_requested = true;
+    _leadership_changed.broken();
+}
+
+ss::future<> recovery_stm::do_dispatch(ss::io_priority_class iopc) {
+    try {
+        co_await _leadership_changed.wait([this] { return _ptr->is_leader(); });
+    } catch (const ss::broken_condition_variable& e) {
+        _stop_requested = true;
+        co_return;
+    }
     // We have to send all the records that leader have, event those that are
     // beyond commit index, thanks to that after majority have recovered
     // leader can update its commit index
@@ -62,10 +79,18 @@ ss::future<> recovery_stm::do_recover(ss::io_priority_class iopc) {
         _stop_requested = true;
         co_return;
     }
+    vlog(
+      _ctxlog.trace,
+      "follower state: {}, next offset: {}",
+      *meta.value(),
+      _next_offset);
+    if (meta.value()->last_dirty_log_index < _next_offset) {
+        _next_offset = details::next_offset(meta.value()->match_index);
+    }
 
     auto lstats = _ptr->_log.offsets();
     // follower last index was already evicted at the leader, use snapshot
-    if (meta.value()->next_index < lstats.start_offset) {
+    if (_next_offset < lstats.start_offset) {
         co_return co_await install_snapshot();
     }
 
@@ -101,13 +126,12 @@ ss::future<> recovery_stm::do_recover(ss::io_priority_class iopc) {
      */
     _committed_offset = _ptr->committed_offset();
 
-    auto follower_next_offset = meta.value()->next_index;
     auto follower_committed_match_index = meta.value()->match_committed_index();
     const auto is_learner = meta.value()->is_learner;
 
     // we do not have next entry for the follower yet, wait for next disk append
     // of follower state change
-    if (lstats.dirty_offset < follower_next_offset) {
+    if (lstats.dirty_offset < _next_offset) {
         co_await meta.value()
           ->follower_state_change.wait([this] { return state_changed(); })
           .handle_exception_type([this](const ss::broken_condition_variable&) {
@@ -115,12 +139,13 @@ ss::future<> recovery_stm::do_recover(ss::io_priority_class iopc) {
           });
     }
 
+    if (meta.value()->last_dirty_log_index < _next_offset) {
+        _next_offset = details::next_offset(meta.value()->match_index);
+    }
     // read range for follower recovery
-    auto batches = co_await read_range_for_recovery(
-      follower_next_offset, iopc, is_learner);
+    auto batches = co_await read_range(_next_offset, iopc, is_learner);
 
     if (batches.empty()) {
-        _stop_requested = true;
         co_return;
     }
     // update recovery state
@@ -140,7 +165,7 @@ ss::future<> recovery_stm::do_recover(ss::io_priority_class iopc) {
         co_await _ptr->_recovery_throttle->get()
           .throttle(size)
           .handle_exception_type([this](const ss::broken_semaphore&) {
-              vlog(_ctxlog.info, "Recovery throttling has stopped");
+              vlog(_ctxlog.info, "dispatcher throttling has stopped");
           });
     }
 
@@ -203,8 +228,7 @@ recovery_stm::should_flush(model::offset follower_committed_match_index) const {
       && (follower_has_batches_to_commit || last_replicate_with_quorum));
 }
 
-ss::future<ss::circular_buffer<model::record_batch>>
-recovery_stm::read_range_for_recovery(
+ss::future<ss::circular_buffer<model::record_batch>> recovery_stm::read_range(
   model::offset start_offset, ss::io_priority_class iopc, bool is_learner) {
     storage::log_reader_config cfg(
       start_offset,
@@ -226,22 +250,14 @@ recovery_stm::read_range_for_recovery(
         cfg.skip_batch_cache = true;
     }
 
-    vlog(
-      _ctxlog.trace,
-      "Reading batches, starting from {} for node {} recovery",
-      start_offset,
-      _node_id);
+    vlog(_ctxlog.trace, "reading batches, starting from {}", start_offset);
 
     auto rdr = co_await _ptr->_log.make_reader(cfg);
 
     auto batches = co_await model::consume_reader_to_memory(
       std::move(rdr), model::no_timeout);
 
-    vlog(
-      _ctxlog.trace,
-      "Read {} batches for {} node recovery",
-      batches.size(),
-      _node_id);
+    vlog(_ctxlog.trace, "read {} batches", batches.size());
 
     co_return details::make_ghost_batches_in_gaps(
       start_offset, std::move(batches));
@@ -276,9 +292,8 @@ ss::future<> recovery_stm::send_install_snapshot_request() {
             .done = (_sent_snapshot_bytes + chunk_size) == _snapshot_size};
 
           vlog(
-            _ctxlog.trace,
-            "Sending install snapshot request to {}, last included index: {}",
-            _node_id,
+            _ctxlog.debug,
+            "sending install snapshot request, last included index: {}",
             req.last_included_index);
           return _ptr->_client_protocol
             .install_snapshot(
@@ -327,7 +342,7 @@ ss::future<> recovery_stm::handle_install_snapshot_reply(
 
     // snapshot received by the follower, continue with recovery
     (*meta)->match_index = _ptr->_last_snapshot_index;
-    (*meta)->next_index = details::next_offset(_ptr->_last_snapshot_index);
+    _next_offset = details::next_offset(_ptr->_last_snapshot_index);
     return close_snapshot_reader();
 }
 
@@ -339,7 +354,6 @@ ss::future<> recovery_stm::install_snapshot() {
         // we are outside of raft operation lock if snapshot isn't yet ready we
         // have to wait for it till next recovery loop
         if (!_snapshot_reader) {
-            _stop_requested = true;
             return ss::now();
         }
 
@@ -380,7 +394,7 @@ ss::future<> recovery_stm::replicate(
       protocol_metadata{
         .group = _ptr->group(),
         .commit_index = commit_idx,
-        .term = _term,
+        .term = _ptr->term(),
         .prev_log_index = prev_log_idx,
         .prev_log_term = prev_log_term,
         .last_visible_index = last_visible_idx},
@@ -391,6 +405,11 @@ ss::future<> recovery_stm::replicate(
 
     auto seq = _ptr->next_follower_sequence(_node_id);
     _ptr->update_suppress_heartbeats(_node_id, seq, heartbeats_suppressed::yes);
+    vlog(
+      _ctxlog.trace,
+      "sending append entries request: [meta: {}, flush: {}]",
+      r.meta,
+      r.flush);
     return dispatch_append_entries(std::move(r))
       .finally([this, seq] {
           _ptr->update_suppress_heartbeats(
@@ -400,26 +419,27 @@ ss::future<> recovery_stm::replicate(
           if (!r) {
               vlog(
                 _ctxlog.error,
-                "recovery_stm: not replicate entry: {} - {}",
-                r,
+                "error replicating entry - {}",
                 r.error().message());
-              _stop_requested = true;
               _ptr->get_probe().recovery_request_error();
           }
+          auto meta = get_follower_meta();
+          if (!meta) {
+              _stop_requested = true;
+              return;
+          }
           _ptr->process_append_entries_reply(
-            _node_id.id(), r.value(), seq, dirty_offset);
-          // If follower stats aren't present we have to stop recovery as
-          // follower was removed from configuration
-          if (!_ptr->_fstats.contains(_node_id)) {
-              _stop_requested = true;
-              return;
+            _node_id.id(),
+            append_entries_reply_ctx::dispatcher,
+            r.value(),
+            seq,
+            dirty_offset);
+
+          if (r.value().result == append_entries_reply::status::success) {
+              _next_offset = details::next_offset(
+                meta.value()->last_dirty_log_index);
           }
-          // If request was reordered we have to stop recovery as follower state
-          // is not known
-          if (seq < _ptr->_fstats.get(_node_id).last_received_seq) {
-              _stop_requested = true;
-              return;
-          }
+
           // move the follower next index backward if recovery were not
           // successfull
           //
@@ -428,18 +448,15 @@ ss::future<> recovery_stm::replicate(
           // nextIndex and retry(§5.3)
 
           if (r.value().result == append_entries_reply::status::failure) {
-              auto meta = get_follower_meta();
-              if (!meta) {
-                  _stop_requested = true;
-                  return;
-              }
-              meta.value()->next_index = std::max(
+              meta.value()->is_recovering = true;
+              const auto prev = _next_offset;
+              _next_offset = std::max(
                 model::offset(0), details::prev_offset(_base_batch_offset));
               vlog(
                 _ctxlog.trace,
-                "Move node {} next index {} backward",
-                _node_id,
-                meta.value()->next_index);
+                "moving next offset backward {} -> {}",
+                prev,
+                _next_offset);
           }
       });
 }
@@ -461,7 +478,7 @@ recovery_stm::dispatch_append_entries(append_entries_request&& r) {
       });
 }
 
-bool recovery_stm::is_recovery_finished() {
+bool recovery_stm::should_stop() {
     if (_ptr->_bg.is_closed()) {
         return true;
     }
@@ -470,58 +487,43 @@ bool recovery_stm::is_recovery_finished() {
     if (!meta) {
         return true;
     }
-    auto lstats = _ptr->_log.offsets();
-    auto max_offset = lstats.dirty_offset();
-    vlog(
-      _ctxlog.trace,
-      "Recovery status - node {}, match idx: {}, max offset: {}",
-      _node_id,
-      meta.value()->match_index,
-      max_offset);
 
-    bool is_up_to_date = meta.value()->match_index == max_offset;
-    bool quorum_writes = _ptr->_visibility_upper_bound_index
-                         <= _ptr->_commit_index;
-    /**
-     * We do not stop recovery for relaxed consistency recoveries as we want
-     * recoveries to be send immediately after leader disk append. For low
-     * volume producers we might have to wait for the next heartbeat to send
-     * recovery request to follower which would lead to increased E2E latency
-     */
-    return (is_up_to_date && quorum_writes) // fully caught up
-           || _stop_requested               // stop requested
-           || _term != _ptr->term()         // term changed
-           || !_ptr->is_leader();           // no longer a leader
+    return _stop_requested;
 }
 
-ss::future<> recovery_stm::apply() {
-    return ss::with_gate(
-             _ptr->_bg,
-             [this] {
-                 return recover().then([this] {
-                     return ss::do_until(
-                       [this] { return is_recovery_finished(); },
-                       [this] { return recover(); });
-                 });
-             })
-      .finally([this] {
-          vlog(_ctxlog.trace, "Finished node {} recovery", _node_id);
-          auto meta = get_follower_meta();
-          if (meta) {
-              meta.value()->is_recovering = false;
-              meta.value()->recovery_finished.broadcast();
-          }
-          if (_snapshot_reader != nullptr) {
-              return close_snapshot_reader();
-          }
-          return ss::now();
-      });
+void recovery_stm::start() {
+    vlog(_ctxlog.info, "starting dispatcher");
+    (void)ss::with_gate(_ptr->_bg, [this] {
+        auto meta = get_follower_meta();
+        if (!meta) {
+            // stop recovery when node was removed
+            return ss::now();
+        }
+        _next_offset = details::next_offset(meta.value()->last_dirty_log_index);
+        return ss::do_until(
+          [this] { return should_stop(); },
+          [this] {
+              return dispatch().handle_exception(
+                [this](const std::exception_ptr& e) {
+                    vlog(
+                      _ctxlog.debug,
+                      "exception while dispatching follower request - {}",
+                      e);
+                });
+          });
+    }).finally([this] {
+        vlog(_ctxlog.info, "stopped dispatcher");
+        if (_snapshot_reader != nullptr) {
+            return close_snapshot_reader();
+        }
+        return ss::now();
+    });
 }
 
 std::optional<follower_index_metadata*> recovery_stm::get_follower_meta() {
     auto it = _ptr->_fstats.find(_node_id);
     if (it == _ptr->_fstats.end()) {
-        vlog(_ctxlog.info, "Node {} is not longer in followers list", _node_id);
+        vlog(_ctxlog.info, "not longer in follower list");
         return std::nullopt;
     }
     return &it->second;
