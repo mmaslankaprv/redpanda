@@ -76,6 +76,7 @@ void log_manager::trigger_housekeeping() {
 }
 
 ss::future<> log_manager::stop() {
+    vlog(stlog.info, "DBG: stopping");
     _compaction_timer.cancel();
     _abort_source.request_abort();
     return _open_gate.close()
@@ -84,7 +85,10 @@ ss::future<> log_manager::stop() {
               return entry.second.handle.close();
           });
       })
-      .then([this] { return _batch_cache.stop(); });
+      .then([this] { return _batch_cache.stop(); })
+      .finally([] {
+          vlog(stlog.info, "DBG: stopped");
+      });
 }
 
 static inline logs_type::iterator find_next_non_compacted_log(logs_type& logs) {
