@@ -114,14 +114,22 @@ private:
     template<typename Service, typename... Args>
     ss::future<> construct_service(ss::sharded<Service>& s, Args&&... args) {
         auto f = s.start(std::forward<Args>(args)...);
-        _deferred.emplace_back([&s] { s.stop().get(); });
+        _deferred.emplace_back([this, &s] {
+            vlog(_log.info, "DBG: stopping {}", typeid(Service).name());
+            s.stop().get();
+            vlog(_log.info, "DBG: stopped {}", typeid(Service).name());
+        });
         return f;
     }
 
     template<typename Service, typename... Args>
     void construct_single_service(std::unique_ptr<Service>& s, Args&&... args) {
         s = std::make_unique<Service>(std::forward<Args>(args)...);
-        _deferred.emplace_back([&s] { s->stop().get(); });
+        _deferred.emplace_back([this, &s] {
+            vlog(_log.info, "DBG: stopping {}", typeid(Service).name());
+            s->stop().get();
+            vlog(_log.info, "DBG: stopped {}", typeid(Service).name());
+        });
     }
     void setup_metrics();
     std::unique_ptr<ss::app_template> _app;
