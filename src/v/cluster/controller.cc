@@ -36,6 +36,7 @@
 #include "model/timeout_clock.h"
 #include "security/acl.h"
 
+#include <seastar/core/coroutine.hh>
 #include <seastar/core/thread.hh>
 #include <seastar/util/later.hh>
 
@@ -237,37 +238,73 @@ ss::future<> controller::shutdown_input() {
 }
 
 ss::future<> controller::stop() {
-    auto f = ss::now();
     if (unlikely(!_raft0)) {
-        return f;
+        co_return;
     }
 
     if (!_as.local().abort_requested()) {
-        f = shutdown_input();
+        vlog(clusterlog.info, "DBG: shutting down input");
+        co_await shutdown_input();
+        vlog(clusterlog.info, "DBG: shut down input");
     }
 
-    return f.then([this] {
-        auto stop_leader_balancer = _leader_balancer ? _leader_balancer->stop()
-                                                     : ss::now();
-        return stop_leader_balancer
-          .then([this] { return _health_manager.stop(); })
-          .then([this] { return _members_backend.stop(); })
-          .then([this] { return _api.stop(); })
-          .then([this] { return _backend.stop(); })
-          .then([this] { return _tp_frontend.stop(); })
-          .then([this] { return _security_frontend.stop(); })
-          .then([this] { return _data_policy_frontend.stop(); })
-          .then([this] { return _members_frontend.stop(); })
-          .then([this] { return _stm.stop(); })
-          .then([this] { return _authorizer.stop(); })
-          .then([this] { return _credentials.stop(); })
-          .then([this] { return _tp_state.stop(); })
-          .then([this] { return _members_manager.stop(); })
-          .then([this] { return _partition_allocator.stop(); })
-          .then([this] { return _partition_leaders.stop(); })
-          .then([this] { return _members_table.stop(); })
-          .then([this] { return _as.stop(); });
-    });
+    if (_leader_balancer) {
+        vlog(clusterlog.info, "DBG: stopping leader_balancer");
+        co_await _leader_balancer->stop();
+        vlog(clusterlog.info, "DBG: stopped leader_balancer");
+    }
+
+    vlog(clusterlog.info, "DBG: stopping health_manager");
+    co_await _health_manager.stop();
+    vlog(clusterlog.info, "DBG: stopped health_manager");
+    vlog(clusterlog.info, "DBG: stopping members_backend");
+    co_await _members_backend.stop();
+    vlog(clusterlog.info, "DBG: stopped members_backend");
+    vlog(clusterlog.info, "DBG: stopping api");
+    co_await _api.stop();
+    vlog(clusterlog.info, "DBG: stopped api");
+    vlog(clusterlog.info, "DBG: stopping backend");
+    co_await _backend.stop();
+    vlog(clusterlog.info, "DBG: stopped backend");
+    vlog(clusterlog.info, "DBG: stopping tp_frontend");
+    co_await _tp_frontend.stop();
+    vlog(clusterlog.info, "DBG: stopped tp_frontend");
+    vlog(clusterlog.info, "DBG: stopping security_frontend");
+    co_await _security_frontend.stop();
+    vlog(clusterlog.info, "DBG: stopped security_frontend");
+    vlog(clusterlog.info, "DBG: stopping data_policy_frontend");
+    co_await _data_policy_frontend.stop();
+    vlog(clusterlog.info, "DBG: stopped data_policy_frontend");
+    vlog(clusterlog.info, "DBG: stopping members_frontend");
+    co_await _members_frontend.stop();
+    vlog(clusterlog.info, "DBG: stopped members_frontend");
+    vlog(clusterlog.info, "DBG: stopping stm");
+    co_await _stm.stop();
+    vlog(clusterlog.info, "DBG: stopped stm");
+    vlog(clusterlog.info, "DBG: stopping authorizer");
+    co_await _authorizer.stop();
+    vlog(clusterlog.info, "DBG: stopped authorizer");
+    vlog(clusterlog.info, "DBG: stopping credentials");
+    co_await _credentials.stop();
+    vlog(clusterlog.info, "DBG: stopped credentials");
+    vlog(clusterlog.info, "DBG: stopping tp_state");
+    co_await _tp_state.stop();
+    vlog(clusterlog.info, "DBG: stopped tp_state");
+    vlog(clusterlog.info, "DBG: stopping members_manager");
+    co_await _members_manager.stop();
+    vlog(clusterlog.info, "DBG: stopped members_manager");
+    vlog(clusterlog.info, "DBG: stopping partition_allocator");
+    co_await _partition_allocator.stop();
+    vlog(clusterlog.info, "DBG: stopped partition_allocator");
+    vlog(clusterlog.info, "DBG: stopping partition_leaders");
+    co_await _partition_leaders.stop();
+    vlog(clusterlog.info, "DBG: stopped partition_leaders");
+    vlog(clusterlog.info, "DBG: stopping members_table");
+    co_await _members_table.stop();
+    vlog(clusterlog.info, "DBG: stopped members_table");
+    vlog(clusterlog.info, "DBG: stopping as");
+    co_await _as.stop();
+    vlog(clusterlog.info, "DBG: stopped as");
 }
 
 } // namespace cluster
