@@ -270,8 +270,8 @@ void metadata_dissemination_service::collect_pending_updates() {
             // Topic metadata is not there anymore, partition was removed
             continue;
         }
-        auto non_overlapping = calculate_non_overlapping_nodes(
-          get_partition_members(ntp_leader.ntp.tp.partition, *tp_md), brokers);
+        //
+        auto all_nodes = _members_table.local().all_broker_ids();
 
         /**
          * remove current node from non overlapping list, current node may be
@@ -279,10 +279,10 @@ void metadata_dissemination_service::collect_pending_updates() {
          * calculate non overlapping nodes but partition replica still exists on
          * current node (it is being moved)
          */
-        std::erase_if(non_overlapping, [this](model::node_id n) {
+        std::erase_if(all_nodes, [this](model::node_id n) {
             return n == _self.id();
         });
-        for (auto& id : non_overlapping) {
+        for (auto& id : all_nodes) {
             if (!_pending_updates.contains(id)) {
                 _pending_updates.emplace(id, update_retry_meta{ntp_leaders{}});
             }
