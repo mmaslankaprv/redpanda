@@ -15,7 +15,10 @@
 #include "outcome.h"
 #include "raft/logger.h"
 #include "storage/snapshot.h"
+#include "utils/mutex.h"
 #include "utils/prefix_logger.h"
+
+#include <seastar/core/gate.hh>
 
 namespace raft {
 
@@ -31,9 +34,15 @@ private:
     read_range_for_recovery(model::offset, ss::io_priority_class, bool);
 
     ss::future<> replicate(
-      model::record_batch_reader&&, append_entries_request::flush_after_append);
+      model::record_batch_reader&&,
+      append_entries_request::flush_after_append,
+      ss::semaphore_units<>);
+    ss::future<> do_replicate(
+      model::record_batch_reader&&,
+      append_entries_request::flush_after_append,
+      ss::semaphore_units<>);
     ss::future<result<append_entries_reply>>
-    dispatch_append_entries(append_entries_request&&);
+    dispatch_append_entries(append_entries_request&&, ss::semaphore_units<>);
     std::optional<follower_index_metadata*> get_follower_meta();
     clock_type::time_point append_entries_timeout();
 
@@ -60,6 +69,28 @@ private:
     size_t _snapshot_size = 0;
     // needed to early exit. (node down)
     bool _stop_requested = false;
+    /**
+     * we hold dispatch lock to make sure that only one request is processed at
+     * a time in recovery_stm, but multiple requests are handed off to rpc
+     * layer.
+     */
+    mutex _dispatch_lock;
+    /**
+     * internal state to track next follower offset, it is updated based on the
+     * range read for recovery. this represent next offset that is expected by
+     * follower when there are no failures and raft group is in steady state
+     */
+    model::offset _next_follower_offset;
+    model::offset _last_follower_dirty_offset;
+    bool _last_success = false;
+    ss::gate _bg;
+    /**
+     * Simple semaphore limiting number of max inflight follower requests.
+     *
+     * TODO: consider removing it when we will have proper backpressure
+     * propagation in RPC
+     */
+    ss::semaphore _max_inflight_requests;
 };
 
 } // namespace raft

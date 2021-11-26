@@ -9,6 +9,7 @@
 
 #include "raft/recovery_stm.h"
 
+#include "config/configuration.h"
 #include "model/fundamental.h"
 #include "model/record_batch_reader.h"
 #include "outcome_future_utils.h"
@@ -42,9 +43,15 @@ recovery_stm::recovery_stm(
         "[follower: {}] [group_id:{}, {}]",
         _node_id,
         _ptr->group(),
-        _ptr->ntp())) {}
+        _ptr->ntp()))
+  , _max_inflight_requests(
+      config::shard_local_cfg()
+        .raft_max_concurrent_append_requests_per_follower) {}
 
 ss::future<> recovery_stm::recover() {
+    if (_ptr->_as.abort_requested()) {
+        return ss::now();
+    }
     auto meta = get_follower_meta();
     if (!meta) {
         // stop recovery when node was removed
@@ -70,10 +77,17 @@ ss::future<> recovery_stm::do_recover(ss::io_priority_class iopc) {
         _stop_requested = true;
         co_return;
     }
+    if (_next_follower_offset < model::offset(0)) {
+        vlog(
+          _ctxlog.trace,
+          "initializing follower next offset to {}",
+          meta.value()->next_index);
+        _next_follower_offset = meta.value()->next_index;
+    }
 
     auto lstats = _ptr->_log.offsets();
     // follower last index was already evicted at the leader, use snapshot
-    if (meta.value()->next_index <= _ptr->_last_snapshot_index) {
+    if (_next_follower_offset < _ptr->_last_snapshot_index) {
         co_return co_await install_snapshot();
     }
 
@@ -109,13 +123,12 @@ ss::future<> recovery_stm::do_recover(ss::io_priority_class iopc) {
      */
     _committed_offset = _ptr->committed_offset();
 
-    auto follower_next_offset = meta.value()->next_index;
     auto follower_committed_match_index = meta.value()->match_committed_index();
     auto is_learner = meta.value()->is_learner;
 
     // we do not have next entry for the follower yet, wait for next disk append
     // of follower state change
-    if (lstats.dirty_offset < follower_next_offset) {
+    if (lstats.dirty_offset < _next_follower_offset) {
         vlog(
           _ctxlog.trace,
           "Recovery status: waiting for node {} state change",
@@ -136,32 +149,39 @@ ss::future<> recovery_stm::do_recover(ss::io_priority_class iopc) {
                 _node_id);
           });
     }
-
-    auto reader = co_await read_range_for_recovery(
-      follower_next_offset, iopc, is_learner);
-    // no batches for recovery, do nothing
-    if (!reader) {
-        co_return;
-    }
-
-    co_await replicate(
-      std::move(*reader), should_flush(follower_committed_match_index));
-
     meta = get_follower_meta();
-
     if (!meta) {
+        // stop recovery when node was removed
         _stop_requested = true;
         co_return;
     }
     /**
-     * since we do not stop recovery for relaxed consistency writes we
-     * have to notify recovery_finished condition variable when follower
-     * is up to date, but before finishing recovery
+     * If the follower log was truncated, reset last success flag and
+     * reinitialize the next offset field
      */
-    auto max_offset = _ptr->_log.offsets().dirty_offset();
-    if (meta.value()->match_index == max_offset) {
-        meta.value()->recovery_finished.broadcast();
+    if (_last_follower_dirty_offset < meta.value()->last_dirty_log_index) {
+        _last_success = false;
+        _next_follower_offset = meta.value()->next_index;
+        vlog(
+          _ctxlog.trace,
+          "Follower dirty offset moved back, reinitializing next offset to: {}",
+          _next_follower_offset);
     }
+
+    auto reader = co_await read_range_for_recovery(
+      _next_follower_offset, iopc, is_learner);
+    // no batches for recovery, do nothing
+    if (!reader) {
+        co_return;
+    }
+    // update next follower offset
+    _next_follower_offset = details::next_offset(_last_batch_offset);
+    auto u = co_await _dispatch_lock.get_units();
+
+    co_await replicate(
+      std::move(*reader),
+      should_flush(follower_committed_match_index),
+      std::move(u));
 }
 
 bool recovery_stm::state_changed() {
@@ -169,8 +189,8 @@ bool recovery_stm::state_changed() {
     if (!meta) {
         return true;
     }
-    return _ptr->_log.offsets().dirty_offset
-           > meta.value()->last_dirty_log_index;
+    return _ptr->_log.offsets().dirty_offset >= _next_follower_offset
+           || meta.value()->last_dirty_log_index < _last_follower_dirty_offset;
 }
 
 append_entries_request::flush_after_append
@@ -356,6 +376,7 @@ ss::future<> recovery_stm::handle_install_snapshot_reply(
     // snapshot received by the follower, continue with recovery
     (*meta)->match_index = _ptr->_last_snapshot_index;
     (*meta)->next_index = details::next_offset(_ptr->_last_snapshot_index);
+    _next_follower_offset = (*meta)->next_index;
     return close_snapshot_reader();
 }
 
@@ -377,7 +398,39 @@ ss::future<> recovery_stm::install_snapshot() {
 
 ss::future<> recovery_stm::replicate(
   model::record_batch_reader&& reader,
-  append_entries_request::flush_after_append flush) {
+  append_entries_request::flush_after_append flush,
+  ss::semaphore_units<> u) {
+    return ss::get_units(_max_inflight_requests, 1)
+      .then([this, reader = std::move(reader), flush, u = std::move(u)](
+              ss::semaphore_units<> req_u) mutable {
+          auto f = ss::try_with_gate(
+            _bg,
+            [this,
+             u = std::move(u),
+             req_u = std::move(req_u),
+             reader = std::move(reader),
+             flush]() mutable {
+                return do_replicate(std::move(reader), flush, std::move(u))
+                  .handle_exception([this](const std::exception_ptr& e) {
+                      vlog(
+                        _ctxlog.info, "error during follower recovery - {}", e);
+                  })
+                  .finally([u = std::move(req_u)] {});
+            });
+          // if previous recovery end up with success allow multiple requests to
+          // be send to the follower
+          if (_last_success) {
+              (void)f;
+              return ss::now();
+          }
+          return f;
+      });
+}
+
+ss::future<> recovery_stm::do_replicate(
+  model::record_batch_reader&& reader,
+  append_entries_request::flush_after_append flush,
+  ss::semaphore_units<> u) {
     // collect metadata for append entries request
     // last persisted offset is last_offset of batch before the first one in the
     // reader
@@ -419,7 +472,7 @@ ss::future<> recovery_stm::replicate(
     auto seq = _ptr->next_follower_sequence(_node_id);
     _ptr->update_suppress_heartbeats(_node_id, seq, heartbeats_suppressed::yes);
     auto lstats = _ptr->_log.offsets();
-    return dispatch_append_entries(std::move(r))
+    return dispatch_append_entries(std::move(r), std::move(u))
       .finally([this, seq] {
           _ptr->update_suppress_heartbeats(
             _node_id, seq, heartbeats_suppressed::no);
@@ -462,11 +515,32 @@ ss::future<> recovery_stm::replicate(
               }
               meta.value()->next_index = std::max(
                 model::offset(0), details::prev_offset(_base_batch_offset));
+              _last_success = false;
+              _next_follower_offset = meta.value()->next_index;
               vlog(
                 _ctxlog.trace,
                 "Move next index {} backward",
                 meta.value()->next_index);
           }
+          _last_success = true;
+      })
+      .finally([this] {
+          auto meta = get_follower_meta();
+
+          if (!meta) {
+              _stop_requested = true;
+              return;
+          }
+          /**
+           * since we do not stop recovery for relaxed consistency writes we
+           * have to notify recovery_finished condition variable when follower
+           * is up to date, but before finishing recovery
+           */
+          auto max_offset = _ptr->_log.offsets().dirty_offset();
+          if (meta.value()->match_index == max_offset) {
+              meta.value()->recovery_finished.broadcast();
+          }
+          meta.value()->follower_state_change.broadcast();
       });
 }
 
@@ -474,13 +548,19 @@ clock_type::time_point recovery_stm::append_entries_timeout() {
     return raft::clock_type::now() + _ptr->_recovery_append_timeout;
 }
 
-ss::future<result<append_entries_reply>>
-recovery_stm::dispatch_append_entries(append_entries_request&& r) {
+ss::future<result<append_entries_reply>> recovery_stm::dispatch_append_entries(
+  append_entries_request&& r, [[maybe_unused]] ss::semaphore_units<> u) {
     _ptr->_probe.recovery_append_request();
-
+    rpc::client_opts opts(append_entries_timeout());
+    std::vector<ss::semaphore_units<>> units_v;
+    units_v.push_back(std::move(u));
+    auto units
+      = ss::make_foreign<ss::lw_shared_ptr<std::vector<ss::semaphore_units<>>>>(
+        ss::make_lw_shared<std::vector<ss::semaphore_units<>>>(
+          std::move(units_v)));
+    opts.resource_units = std::move(units);
     return _ptr->_client_protocol
-      .append_entries(
-        _node_id.id(), std::move(r), rpc::client_opts(append_entries_timeout()))
+      .append_entries(_node_id.id(), std::move(r), std::move(opts))
       .then([this](result<append_entries_reply> reply) {
           return _ptr->validate_reply_target_node(
             "append_entries_recovery", std::move(reply));
@@ -530,26 +610,25 @@ bool recovery_stm::is_recovery_finished() {
 }
 
 ss::future<> recovery_stm::apply() {
-    return ss::with_gate(
-             _ptr->_bg,
-             [this] {
-                 return recover().then([this] {
-                     return ss::do_until(
-                       [this] { return is_recovery_finished(); },
-                       [this] { return recover(); });
-                 });
-             })
+    return recover()
+      .then([this] {
+          return ss::do_until(
+            [this] { return is_recovery_finished(); },
+            [this] { return recover(); });
+      })
       .finally([this] {
           vlog(_ctxlog.trace, "Finished recovery");
-          auto meta = get_follower_meta();
-          if (meta) {
-              meta.value()->is_recovering = false;
-              meta.value()->recovery_finished.broadcast();
-          }
+          auto f = _bg.close();
           if (_snapshot_reader != nullptr) {
-              return close_snapshot_reader();
+              f = f.then([this] { return close_snapshot_reader(); });
           }
-          return ss::now();
+          return f.then([this] {
+              auto meta = get_follower_meta();
+              if (meta) {
+                  meta.value()->is_recovering = false;
+                  meta.value()->recovery_finished.broadcast();
+              }
+          });
       });
 }
 
