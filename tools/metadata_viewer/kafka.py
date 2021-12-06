@@ -10,3 +10,11 @@ class KafkaLog:
             s = Segment(path)
             for batch in s:
                 yield batch.header._asdict()
+
+    def batches(self):
+        for path in self.ntp.segments:
+            s = Segment(path)
+            for batch in s:
+                ret = batch.header._asdict()
+                ret['ntp'] = s.path
+                yield ret
