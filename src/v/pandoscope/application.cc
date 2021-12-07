@@ -9,37 +9,22 @@
 
 #include "pandoscope/application.h"
 
-#include "model/fundamental.h"
-#include "model/metadata.h"
-#include "pandoscope/configuration.h"
+#include "net/unresolved_address.h"
+#include "pandoscope/executor.h"
+#include "pandoscope/offset_translator.h"
+#include "pandoscope/print.h"
 #include "pandoscope/transform.h"
-#include "storage/api.h"
-#include "storage/batch_cache.h"
-#include "storage/kvstore.h"
-#include "storage/log_manager.h"
-#include "storage/ntp_config.h"
-#include "storage/types.h"
-#include "utils/directory_walker.h"
 #include "version.h"
 #include "vlog.h"
 
 #include <seastar/core/coroutine.hh>
-#include <seastar/core/file-types.hh>
-#include <seastar/core/file.hh>
 #include <seastar/core/thread.hh>
-#include <seastar/util/later.hh>
+#include <seastar/util/defer.hh>
 
 #include <boost/lexical_cast.hpp>
 #include <boost/program_options/value_semantic.hpp>
 #include <sys/utsname.h>
 
-#include <algorithm>
-#include <chrono>
-#include <exception>
-#include <memory>
-#include <regex>
-#include <stdexcept>
-#include <string>
 #include <vector>
 
 application::application(ss::sstring logger_name)
@@ -63,14 +48,8 @@ int application::run(int ac, char** av) {
 
         return ss::async([this, &cfg] {
             try {
-                auto deferred = ss::defer([this] {
-                    auto deferred = std::move(_deferred);
-                    // stop services in reverse order
-                    while (!deferred.empty()) {
-                        deferred.pop_back();
-                    }
-                });
-                auto app_cfg = configuration::from_program_options(cfg);
+                auto app_cfg = pandoscope::configuration::from_program_options(
+                  cfg);
                 vlog(_log.info, "Configuration: {}", app_cfg);
 
                 initialize(app_cfg).get();
@@ -90,137 +69,66 @@ int application::run(int ac, char** av) {
 
 void application::init_env() { std::setvbuf(stdout, nullptr, _IOLBF, 1024); }
 
-storage::log_config make_log_config(const configuration& cfg) {
-    return storage::log_config(
-      storage::log_config::storage_type::disk,
-      cfg.data_dir.c_str(),
-      1024_MiB,
-      1024_MiB,
-      1024_MiB,
-      storage::debug_sanitize_files::yes,
-      ss::default_priority_class(),
-      std::nullopt,
-      std::chrono::hours(24),
-      std::chrono::hours::max(),
-      storage::with_cache::no,
-      storage::batch_cache::reclaim_options(),
-      std::chrono::hours(24),
-      ss::default_scheduling_group());
-}
-
-storage::kvstore_config make_kvstore_config(const configuration& cfg) {
-    using namespace std::chrono_literals;
-
-    return storage::kvstore_config(
-      1024_MiB, 1s, cfg.data_dir.c_str(), storage::debug_sanitize_files::yes);
-}
-
-ss::future<std::vector<std::pair<model::ntp, model::revision_id>>>
-build_ntp_list(std::filesystem::path root) {
-    std::vector<std::pair<model::ntp, model::revision_id>> ntps;
-    static std::regex partition_dir_pattern(R"((\d+)_(\d+))");
-    // first level, namespace
-    co_await directory_walker::walk(
-      root.string(), [&ntps, root](ss::directory_entry namespace_e) {
-          if (namespace_e.type != ss::directory_entry_type::directory) {
-              return ss::now();
-          }
-          auto ns_path = root / namespace_e.name.c_str();
-
-          return directory_walker::walk(
-            ns_path.string(),
-            [&ntps, ns = namespace_e.name, ns_path](
-              ss::directory_entry topic_e) {
-                if (topic_e.type != ss::directory_entry_type::directory) {
-                    return ss::now();
-                }
-                auto tp_path = ns_path / topic_e.name.c_str();
-                return directory_walker::walk(
-                  tp_path.string(),
-                  [&ntps, ns, tp = topic_e.name](
-                    ss::directory_entry partition_e) {
-                      if (
-                        partition_e.type
-                        != ss::directory_entry_type::directory) {
-                          return ss::now();
-                      }
-                      std::cmatch matches;
-                      auto match = std::regex_search(
-                        partition_e.name.c_str(),
-                        matches,
-                        partition_dir_pattern);
-                      if (!match) {
-                          return ss::now();
-                      }
-
-                      ntps.emplace_back(
-                        model::ntp(
-                          model::ns(ns),
-                          model::topic(tp),
-                          model::partition_id(
-                            boost::lexical_cast<int32_t>(matches[1]))),
-                        model::revision_id(
-                          boost::lexical_cast<int64_t>(matches[2])));
-                      return ss::now();
-                  });
-            });
-      });
-    co_return ntps;
-};
-
-storage::ntp_config make_ntp_config(
-  model::ntp ntp, const ss::sstring& data_dir, model::revision_id rev) {
-    auto overrides = std::make_unique<storage::ntp_config::default_overrides>();
-    overrides->cleanup_policy_bitflags = model::cleanup_policy_bitflags::none;
-
-    return storage::ntp_config(
-      std::move(ntp), data_dir, std::move(overrides), rev);
-}
-
-ss::future<> application::initialize(configuration cfg) {
-    _storage = std::make_unique<storage::api>(
-      make_kvstore_config(cfg), make_log_config(cfg));
-
-    co_await _storage->start();
-    _deferred.emplace_back([this] { _storage->stop().get(); });
-
-    _available_ntps = co_await build_ntp_list(cfg.data_dir);
-
-    for (auto& [n, r] : _available_ntps) {
-        vlog(_log.info, "found {}", n);
-    }
-    model::ntp ntp(*cfg.ns, *cfg.topic, *cfg.partition);
-
-    auto it = std::find_if(
-      _available_ntps.begin(), _available_ntps.end(), [&ntp](auto& p) {
-          return p.first == ntp;
-      });
-
-    if (it == _available_ntps.end()) {
-        vlog(
-          _log.error,
-          "unable to find ntp: {} in data folder: {}",
-          ntp,
-          cfg.data_dir);
-        throw std::invalid_argument("NTP not found");
-    }
-
+ss::future<> application::initialize(pandoscope::configuration cfg) {
     try {
-        auto log = co_await _storage->log_mgr().manage(
-          make_ntp_config(it->first, cfg.data_dir.string(), it->second));
-        auto dst_ntp = it->first;
-        dst_ntp.ns = model::ns(it->first.ns() + "_res");
-        auto dst_cfg = make_ntp_config(
-          dst_ntp, cfg.data_dir.string(), it->second);
-        auto dst = co_await _storage->log_mgr().manage(std::move(dst_cfg));
-        // std::vector<pandoscope::transformation> trs;
-        // trs.push_back(pandoscope::make_printing_transform());
-        // co_await pandoscope::transform(log, dst, std::move(trs));
-        co_await pandoscope::print(log, pandoscope::make_simple_printer());
+        _executor = std::make_unique<pandoscope::executor>(std::move(cfg));
+        co_await _executor->start();
+
+        pandoscope::address_mapping mapping;
+        mapping.kafka.emplace(
+          net::unresolved_address(
+            "rp-be4083ec48c0708970213f46f848576ab55fd1c3-0.rp-"
+            "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
+            "local.",
+            9092),
+          net::unresolved_address("172.31.11.76", 9092));
+        mapping.kafka.emplace(
+          net::unresolved_address(
+            "rp-be4083ec48c0708970213f46f848576ab55fd1c3-1.rp-"
+            "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
+            "local.",
+            9092),
+          net::unresolved_address("172.31.14.150", 9092));
+        mapping.kafka.emplace(
+          net::unresolved_address(
+            "rp-be4083ec48c0708970213f46f848576ab55fd1c3-2.rp-"
+            "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
+            "local.",
+            9092),
+          net::unresolved_address("172.31.11.150", 9092));
+
+        mapping.rpc.emplace(
+          net::unresolved_address(
+            "rp-be4083ec48c0708970213f46f848576ab55fd1c3-0.rp-"
+            "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
+            "local.",
+            33145),
+          net::unresolved_address("172.31.11.76", 33145));
+        mapping.rpc.emplace(
+          net::unresolved_address(
+            "rp-be4083ec48c0708970213f46f848576ab55fd1c3-1.rp-"
+            "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
+            "local.",
+            33145),
+          net::unresolved_address("172.31.14.150", 33145));
+        mapping.rpc.emplace(
+          net::unresolved_address(
+            "rp-be4083ec48c0708970213f46f848576ab55fd1c3-2.rp-"
+            "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
+            "local.",
+            33145),
+          net::unresolved_address("172.31.11.150", 33145));
+
+        std::vector<pandoscope::transformation> tr;
+        tr.push_back(
+          pandoscope::make_cluster_config_transformation(std::move(mapping)));
+        co_await _executor->execute(
+          pandoscope::transform_command(std::move(tr)));
 
     } catch (const std::exception_ptr& e) {
-        vlog(_log.error, "unable to read ntp: {} - error {}", ntp, e);
+        vlog(_log.error, "unable to start pandoscope - {}", e);
     }
+    co_await _executor->stop();
 }
 
 void application::add_program_options(ss::app_template& app) {

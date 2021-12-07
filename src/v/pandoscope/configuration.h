@@ -1,17 +1,7 @@
 #pragma once
+#include "model/record.h"
 
-#include "model/record_batch_types.h"
-
-#include <seastar/core/sstring.hh>
-
-#include <boost/program_options/variables_map.hpp>
-
-#include <filesystem>
-#include <optional>
-#include <ostream>
-#include <vector>
-#pragma once
-#include "model/fundamental.h"
+namespace pandoscope {
 
 struct configuration {
     std::filesystem::path data_dir;
@@ -36,3 +26,5 @@ struct configuration {
 
     friend std::ostream& operator<<(std::ostream&, const configuration&);
 };
+
+} // namespace pandoscope

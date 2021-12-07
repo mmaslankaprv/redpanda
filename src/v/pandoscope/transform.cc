@@ -2,11 +2,16 @@
 
 #include "cluster/commands.h"
 #include "cluster/types.h"
+#include "model/fundamental.h"
 #include "model/metadata.h"
 #include "model/record.h"
 #include "model/record_batch_types.h"
 #include "model/timeout_clock.h"
+#include "net/unresolved_address.h"
+#include "pandoscope/logger.h"
+#include "raft/group_configuration.h"
 #include "reflection/adl.h"
+#include "storage/ntp_config.h"
 #include "storage/parser_utils.h"
 #include "storage/types.h"
 #include "vlog.h"
@@ -16,13 +21,13 @@
 #include <seastar/core/io_priority_class.hh>
 #include <seastar/core/loop.hh>
 
+#include <algorithm>
+#include <iterator>
 #include <memory>
 #include <utility>
 #include <vector>
 
 namespace pandoscope {
-
-static ss::logger logger{"pandoscope-transform"};
 
 model::record_batch_reader make_transforming_reader(
   std::vector<transformation> transformations,
@@ -286,52 +291,114 @@ transformation make_topic_configuration_transformation() {
     return transformation(std::make_unique<tr>());
 }
 
-printer make_simple_printer() {
-    struct pr : printer::impl {
-        ss::future<> print(const model::record_batch& b) final {
-            vlog(
-              logger.info,
-              "batch - offset: {}, size: {}",
-              b.base_offset(),
-              b.size_bytes());
-            max_size = std::max<size_t>(max_size, b.size_bytes());
-            co_return;
-        }
-
-        bool is_applicable(const model::record_batch&) final { return true; };
-
-        void summary() const final {
-            vlog(logger.info, "max batch size: {}", max_size);
-        }
-
-        size_t max_size = 0;
-    };
-    return printer(std::make_unique<pr>());
+net::unresolved_address replace_address(
+  const address_mapping::mapping_t& mapping,
+  const net::unresolved_address& src) {
+    auto it = mapping.find(src);
+    if (it == mapping.end()) {
+        return src;
+    }
+    return it->second;
 }
 
-ss::future<> print(storage::log src, printer pr) {
-    auto offsets = src.offsets();
-    storage::log_reader_config cfg(
-      offsets.start_offset, offsets.dirty_offset, ss::default_priority_class());
-    class consumer {
-    public:
-        explicit consumer(printer p)
-          : _printer(std::move(p)) {}
+std::vector<model::broker_endpoint> replace_endpoints(
+  const address_mapping::mapping_t& mapping,
+  const std::vector<model::broker_endpoint>& src) {
+    std::vector<model::broker_endpoint> ret;
+    ret.reserve(src.size());
 
-        ss::future<ss::stop_iteration>
-        operator()(const model::record_batch& rb) {
-            co_await _printer.print(rb);
-            co_return ss::stop_iteration::no;
+    std::transform(
+      src.begin(),
+      src.end(),
+      std::back_inserter(ret),
+      [&mapping](const model::broker_endpoint& endpoint) {
+          auto it = mapping.find(endpoint.address);
+          if (it == mapping.end()) {
+              return endpoint;
+          }
+          return model::broker_endpoint(endpoint.name, it->second);
+      });
+
+    return ret;
+}
+
+transformation make_cluster_config_transformation(address_mapping mapping) {
+    struct tr : transformation::impl {
+        explicit tr(address_mapping mapping)
+          : _mapping(std::move(mapping)) {}
+        ss::future<model::record_batch> apply(model::record_batch& b) final {
+            vlog(
+              logger.info, "transforming configuration at {}", b.base_offset());
+
+            auto records = b.copy_records();
+            vassert(
+              b.record_count() == 1,
+              "raft configuration batch should have one record");
+
+            auto cfg = reflection::from_iobuf<raft::group_configuration>(
+              records.begin()->release_value());
+            std::vector<model::broker> new_brokers;
+            new_brokers.reserve(cfg.brokers().size());
+
+            std::transform(
+              cfg.brokers().begin(),
+              cfg.brokers().end(),
+              std::back_inserter(new_brokers),
+              [this](const model::broker& broker) {
+                  return model::broker(
+                    broker.id(),
+                    replace_endpoints(
+                      _mapping.kafka, broker.kafka_advertised_listeners()),
+                    replace_address(_mapping.rpc, broker.rpc_address()),
+                    broker.rack(),
+                    broker.properties());
+              });
+
+            for (auto& b : new_brokers) {
+                cfg.update(b);
+            }
+            std::vector<serialized_record> out_records;
+            out_records.emplace_back(
+              iobuf{}, reflection::to_iobuf(std::move(cfg)));
+
+            co_return replace_batch(b.header(), out_records);
         }
-        void end_of_stream() { _printer.summary(); }
 
-    private:
-        printer _printer;
+        bool is_applicable(const model::record_batch& b) final {
+            return b.header().type
+                   == model::record_batch_type::raft_configuration;
+        };
+        address_mapping _mapping;
     };
 
-    auto rdr = co_await src.make_reader(cfg);
+    return transformation(std::make_unique<tr>(std::move(mapping)));
+}
 
-    co_await rdr.for_each_ref(consumer(std::move(pr)), model::no_timeout);
+executor::command transform_command(std::vector<transformation> tr) {
+    struct cmd : executor::command::impl {
+        explicit cmd(std::vector<transformation> tr)
+          : transformations(std::move(tr)) {}
+
+        ss::future<> execute(storage::log log, executor::ctx ctx) final {
+            auto& cfg = log.config();
+
+            model::ntp new_ntp(
+              cfg.ntp().ns,
+              model::topic(fmt::format("tr_{}", cfg.ntp().tp.topic())),
+              cfg.ntp().tp.partition);
+
+            storage::ntp_config new_cfg(new_ntp, cfg.base_directory());
+            auto dst = co_await ctx.storage.log_mgr().manage(
+              std::move(new_cfg));
+            co_return co_await transform(log, dst, std::move(transformations));
+        }
+
+        std::string_view name() const final { return "transformer"; };
+
+        std::vector<transformation> transformations;
+    };
+
+    return executor::command(ss::make_shared<cmd>(std::move(tr)));
 }
 
 } // namespace pandoscope

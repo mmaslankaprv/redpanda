@@ -3,6 +3,10 @@ add_executable(pandoscope
     configuration.cc
     application.cc
     transform.cc
+    executor.cc
+    logger.cc
+    print.cc
+    topics.cc
     main.cc
 )
 target_link_libraries(pandoscope PUBLIC v::cluster)

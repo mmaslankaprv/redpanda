@@ -193,11 +193,18 @@ ss::future<> controller::start() {
           return _stm.invoke_on(controller_stm_shard, &controller_stm::start);
       })
       .then([this] {
-          return _stm.invoke_on(controller_stm_shard, [](controller_stm& stm) {
-              // we do not have to use timeout in here as all the batches to
-              // apply have to be accesssible
-              return stm.wait(stm.bootstrap_last_applied(), model::no_timeout);
-          });
+          return _stm.invoke_on(
+            controller_stm_shard, [this](controller_stm& stm) {
+                // we do not have to use timeout in here as all the batches to
+                // apply have to be accesssible
+                vlog(
+                  clusterlog.info,
+                  "DBG: waiting for {}, raft0 committed offset: {}",
+                  stm.bootstrap_last_applied(),
+                  _raft0->committed_offset());
+                return stm.wait(
+                  stm.bootstrap_last_applied(), model::no_timeout);
+            });
       })
       .then(
         [this] { return _backend.invoke_on_all(&controller_backend::start); })
