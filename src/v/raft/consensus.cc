@@ -338,6 +338,7 @@ consensus::success_reply consensus::update_follower_index(
             idx.last_dirty_log_index = reply.last_dirty_log_index;
             idx.last_flushed_log_index = reply.last_flushed_log_index;
             idx.next_index = details::next_offset(idx.last_dirty_log_index);
+            idx.match_index = model::offset{};
             idx.follower_state_change.broadcast();
         }
         return success_reply::no;
