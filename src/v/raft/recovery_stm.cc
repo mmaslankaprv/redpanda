@@ -149,23 +149,17 @@ ss::future<> recovery_stm::do_recover(ss::io_priority_class iopc) {
                 _node_id);
           });
     }
+
+    // recovery may already be finished
+    if (_last_success && is_recovery_finished()) {
+        co_return;
+    }
+
     meta = get_follower_meta();
     if (!meta) {
         // stop recovery when node was removed
         _stop_requested = true;
         co_return;
-    }
-    /**
-     * If the follower log was truncated, reset last success flag and
-     * reinitialize the next offset field
-     */
-    if (_last_follower_dirty_offset < meta.value()->last_dirty_log_index) {
-        _last_success = false;
-        _next_follower_offset = meta.value()->next_index;
-        vlog(
-          _ctxlog.trace,
-          "Follower dirty offset moved back, reinitializing next offset to: {}",
-          _next_follower_offset);
     }
 
     auto reader = co_await read_range_for_recovery(
@@ -176,12 +170,29 @@ ss::future<> recovery_stm::do_recover(ss::io_priority_class iopc) {
     }
     // update next follower offset
     _next_follower_offset = details::next_offset(_last_batch_offset);
-    auto u = co_await _dispatch_lock.get_units();
-
-    co_await replicate(
+    auto inflight_units = co_await ss::get_units(_max_inflight_requests, 1);
+    auto distpatch_units = co_await _dispatch_lock.get_units();
+    // if previous recovery end up with success allow multiple requests to
+    // be send to the follower
+    auto f = replicate(
       std::move(*reader),
       should_flush(follower_committed_match_index),
-      std::move(u));
+      std::move(distpatch_units));
+    if (_last_success) {
+        auto max_inflight
+          = config::shard_local_cfg()
+              .raft_max_concurrent_append_requests_per_follower();
+        vlog(
+          _ctxlog.trace,
+          "waiting for the response in background - inflight requests "
+          "{}/{}",
+          (max_inflight - _max_inflight_requests.available_units()),
+          max_inflight);
+        (void)f;
+        co_return;
+    }
+    // by default wait for recovery in foreground
+    co_await std::move(f);
 }
 
 bool recovery_stm::state_changed() {
@@ -190,7 +201,7 @@ bool recovery_stm::state_changed() {
         return true;
     }
     return _ptr->_log.offsets().dirty_offset >= _next_follower_offset
-           || meta.value()->last_dirty_log_index < _last_follower_dirty_offset;
+           || is_recovery_finished();
 }
 
 append_entries_request::flush_after_append
@@ -383,7 +394,7 @@ ss::future<> recovery_stm::handle_install_snapshot_reply(
 ss::future<> recovery_stm::install_snapshot() {
     // open reader if not yet available
     auto f = _snapshot_reader != nullptr ? ss::now() : open_snapshot_reader();
-
+    _last_success = false;
     return f.then([this]() mutable {
         // we are outside of raft operation lock if snapshot isn't yet ready we
         // have to wait for it till next recovery loop
@@ -400,30 +411,13 @@ ss::future<> recovery_stm::replicate(
   model::record_batch_reader&& reader,
   append_entries_request::flush_after_append flush,
   ss::semaphore_units<> u) {
-    return ss::get_units(_max_inflight_requests, 1)
-      .then([this, reader = std::move(reader), flush, u = std::move(u)](
-              ss::semaphore_units<> req_u) mutable {
-          auto f = ss::try_with_gate(
-            _bg,
-            [this,
-             u = std::move(u),
-             req_u = std::move(req_u),
-             reader = std::move(reader),
-             flush]() mutable {
-                return do_replicate(std::move(reader), flush, std::move(u))
-                  .handle_exception([this](const std::exception_ptr& e) {
-                      vlog(
-                        _ctxlog.info, "error during follower recovery - {}", e);
-                  })
-                  .finally([u = std::move(req_u)] {});
+    return ss::try_with_gate(
+      _bg,
+      [this, u = std::move(u), reader = std::move(reader), flush]() mutable {
+          return do_replicate(std::move(reader), flush, std::move(u))
+            .handle_exception([this](const std::exception_ptr& e) {
+                vlog(_ctxlog.info, "error during follower recovery - {}", e);
             });
-          // if previous recovery end up with success allow multiple requests to
-          // be send to the follower
-          if (_last_success) {
-              (void)f;
-              return ss::now();
-          }
-          return f;
       });
 }
 
@@ -490,13 +484,14 @@ ss::future<> recovery_stm::do_replicate(
             _node_id.id(), r.value(), seq, dirty_offset);
           // If follower stats aren't present we have to stop recovery as
           // follower was removed from configuration
-          if (!_ptr->_fstats.contains(_node_id)) {
+          auto meta = get_follower_meta();
+          if (!meta) {
               _stop_requested = true;
               return;
           }
           // If request was reordered we have to stop recovery as follower state
           // is not known
-          if (seq < _ptr->_fstats.get(_node_id).last_received_seq) {
+          if (seq < meta.value()->last_received_seq) {
               _stop_requested = true;
               return;
           }
@@ -506,12 +501,16 @@ ss::future<> recovery_stm::do_replicate(
           // Raft paper:
           // If AppendEntries fails because of log inconsistency: decrement
           // nextIndex and retry(§5.3)
-
-          if (r.value().result == append_entries_reply::status::failure) {
-              auto meta = get_follower_meta();
-              if (!meta) {
-                  _stop_requested = true;
-                  return;
+          append_entries_reply reply = r.value();
+          _last_follower_dirty_offset = reply.last_dirty_log_index;
+          if (reply.result == append_entries_reply::status::failure) {
+              if (_last_follower_dirty_offset > reply.last_dirty_log_index) {
+                  _next_follower_offset = meta.value()->next_index;
+                  vlog(
+                    _ctxlog.trace,
+                    "Follower dirty offset moved back, reinitializing next "
+                    "offset to: {}",
+                    _next_follower_offset);
               }
               meta.value()->next_index = std::max(
                 model::offset(0), details::prev_offset(_base_batch_offset));
@@ -521,6 +520,7 @@ ss::future<> recovery_stm::do_replicate(
                 _ctxlog.trace,
                 "Move next index {} backward",
                 meta.value()->next_index);
+              return;
           }
           _last_success = true;
       })
@@ -619,16 +619,18 @@ ss::future<> recovery_stm::apply() {
       .finally([this] {
           vlog(_ctxlog.trace, "Finished recovery");
           auto f = _bg.close();
+          auto meta = get_follower_meta();
+          if (meta) {
+              meta.value()->is_recovering = false;
+              // set stop requested flag to skip checking if follower is up to
+              // date
+              _stop_requested = true;
+              meta.value()->recovery_finished.broadcast();
+          }
           if (_snapshot_reader != nullptr) {
               f = f.then([this] { return close_snapshot_reader(); });
           }
-          return f.then([this] {
-              auto meta = get_follower_meta();
-              if (meta) {
-                  meta.value()->is_recovering = false;
-                  meta.value()->recovery_finished.broadcast();
-              }
-          });
+          return f;
       });
 }
 

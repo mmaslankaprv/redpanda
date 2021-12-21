@@ -11,6 +11,7 @@
 
 #include "config/configuration.h"
 #include "likely.h"
+#include "model/fundamental.h"
 #include "model/metadata.h"
 #include "model/namespace.h"
 #include "prometheus/prometheus_sanitize.h"
@@ -343,8 +344,8 @@ consensus::success_reply consensus::update_follower_index(
             idx.last_flushed_log_index = reply.last_flushed_log_index;
             idx.next_index = details::next_offset(idx.last_dirty_log_index);
             idx.match_index = model::offset{};
-            idx.follower_state_change.broadcast();
         }
+        idx.follower_state_change.broadcast();
         return success_reply::no;
     }
 
@@ -2897,7 +2898,7 @@ bool consensus::should_reconnect_follower(vnode id) {
                        clock_type::now() - last_at)
                        .count();
         vlog(
-          _ctxlog.trace,
+          _ctxlog.info,
           "should_reconnect_follower({}): {}/{} fails, last ok {}ms ago",
           id,
           fail_count,
