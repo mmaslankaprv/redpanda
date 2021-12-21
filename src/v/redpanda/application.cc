@@ -607,6 +607,8 @@ void application::wire_up_redpanda_services() {
         _scheduling_groups.raft_sg(),
         config::shard_local_cfg().raft_heartbeat_interval_ms(),
         config::shard_local_cfg().raft_heartbeat_timeout_ms(),
+        config::shard_local_cfg().max_recovery_memory.bind(),
+        config::shard_local_cfg().recovery_default_read_size.bind(),
         std::ref(_raft_connection_cache),
         std::ref(storage),
         std::ref(recovery_throttle))

@@ -16,6 +16,7 @@
 #include "units.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace config {
 using namespace std::chrono_literals;
@@ -144,7 +145,19 @@ configuration::configuration()
 
   , min_version(*this, "min_version")
   , max_version(*this, "max_version")
-
+  , max_recovery_memory(
+      *this,
+      "max_recovery_memory",
+      "Max memory that can be used for reads in raft recovery process by "
+      "default 15% of total memory",
+      {.needs_restart = needs_restart::no, .visibility = visibility::tunable},
+      std::nullopt)
+  , recovery_default_read_size(
+      *this,
+      "recovery_default_read_size",
+      "default size of read issued during raft follower recovery",
+      {.needs_restart = needs_restart::no, .visibility = visibility::tunable},
+      512_KiB)
   , use_scheduling_groups(*this, "use_scheduling_groups")
   , enable_admin_api(
       *this,
