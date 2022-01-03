@@ -317,7 +317,11 @@ ss::future<> metadata_dissemination_service::dispatch_disseminate_leadership() {
                  return dispatch_one_update(br_update.first, br_update.second);
              })
       .then([this] { cleanup_finished_updates(); })
-      .finally([this] { _dispatch_timer.arm(_dissemination_interval); });
+      .finally([this] {
+          if (!_bg.is_closed()) {
+              _dispatch_timer.arm(_dissemination_interval);
+          }
+      });
 }
 
 ss::future<> metadata_dissemination_service::dispatch_one_update(
