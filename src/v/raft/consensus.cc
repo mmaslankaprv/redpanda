@@ -709,6 +709,8 @@ ss::future<result<replicate_result>> consensus::do_append_replicate_relaxed(
                std::move(rdr), model::term_id(_term)),
              update_last_quorum_index::no)
       .then([this](storage::append_result res) {
+          vlog(
+            _ctxlog.trace, "Relaxed consistency leader append result: {}", res);
           // only update visibility upper bound if all quorum
           // replicated entries are committed already
           if (_commit_index >= _last_quorum_replicated_index) {
@@ -717,6 +719,13 @@ ss::future<result<replicate_result>> consensus::do_append_replicate_relaxed(
               _visibility_upper_bound_index = std::max(
                 _visibility_upper_bound_index, res.last_offset);
               maybe_update_majority_replicated_index();
+          }
+          // if not yet triggered, trigger recovery stm immediately to reduce
+          // latency
+          for (auto& [_, meta] : _fstats) {
+              if (unlikely(!meta.is_recovering)) {
+                  dispatch_recovery(meta);
+              }
           }
           return ret_t(replicate_result{.last_offset = res.last_offset});
       })
