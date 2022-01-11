@@ -8,6 +8,7 @@
 #include "model/record_batch_types.h"
 #include "model/timeout_clock.h"
 #include "net/unresolved_address.h"
+#include "pandoscope/executor.h"
 #include "pandoscope/logger.h"
 #include "raft/group_configuration.h"
 #include "reflection/adl.h"

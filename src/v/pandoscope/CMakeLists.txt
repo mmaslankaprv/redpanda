@@ -8,6 +8,7 @@ add_executable(pandoscope
     print.cc
     topics.cc
     main.cc
+    commands.cc
 )
 target_link_libraries(pandoscope PUBLIC v::cluster)
 set_property(TARGET pandoscope PROPERTY POSITION_INDEPENDENT_CODE ON)

@@ -9,7 +9,10 @@
 
 #include "pandoscope/application.h"
 
+#include "config/configuration.h"
+#include "model/namespace.h"
 #include "net/unresolved_address.h"
+#include "pandoscope/commands.h"
 #include "pandoscope/executor.h"
 #include "pandoscope/offset_translator.h"
 #include "pandoscope/print.h"
@@ -70,9 +73,55 @@ int application::run(int ac, char** av) {
 void application::init_env() { std::setvbuf(stdout, nullptr, _IOLBF, 1024); }
 
 ss::future<> application::initialize(pandoscope::configuration cfg) {
+    config::shard_local_cfg().disable_metrics.set_value(true);
     try {
         _executor = std::make_unique<pandoscope::executor>(std::move(cfg));
         co_await _executor->start();
+
+        // pandoscope::address_mapping mapping;
+        // mapping.kafka.emplace(
+        //   net::unresolved_address(
+        //     "rp-be4083ec48c0708970213f46f848576ab55fd1c3-0.rp-"
+        //     "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
+        //     "local.",
+        //     9092),
+        //   net::unresolved_address("172.31.11.76", 9092));
+        // mapping.kafka.emplace(
+        //   net::unresolved_address(
+        //     "rp-be4083ec48c0708970213f46f848576ab55fd1c3-1.rp-"
+        //     "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
+        //     "local.",
+        //     9092),
+        //   net::unresolved_address("172.31.14.150", 9092));
+        // mapping.kafka.emplace(
+        //   net::unresolved_address(
+        //     "rp-be4083ec48c0708970213f46f848576ab55fd1c3-2.rp-"
+        //     "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
+        //     "local.",
+        //     9092),
+        //   net::unresolved_address("172.31.11.150", 9092));
+
+        // mapping.rpc.emplace(
+        //   net::unresolved_address(
+        //     "rp-be4083ec48c0708970213f46f848576ab55fd1c3-0.rp-"
+        //     "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
+        //     "local.",
+        //     33145),
+        //   net::unresolved_address("172.31.11.76", 33145));
+        // mapping.rpc.emplace(
+        //   net::unresolved_address(
+        //     "rp-be4083ec48c0708970213f46f848576ab55fd1c3-1.rp-"
+        //     "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
+        //     "local.",
+        //     33145),
+        //   net::unresolved_address("172.31.14.150", 33145));
+        // mapping.rpc.emplace(
+        //   net::unresolved_address(
+        //     "rp-be4083ec48c0708970213f46f848576ab55fd1c3-2.rp-"
+        //     "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
+        //     "local.",
+        //     33145),
+        //   net::unresolved_address("172.31.11.150", 33145));
 
         pandoscope::address_mapping mapping;
         mapping.kafka.emplace(
@@ -81,21 +130,21 @@ ss::future<> application::initialize(pandoscope::configuration cfg) {
             "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
             "local.",
             9092),
-          net::unresolved_address("172.31.11.76", 9092));
+          net::unresolved_address("localhost", 9092));
         mapping.kafka.emplace(
           net::unresolved_address(
             "rp-be4083ec48c0708970213f46f848576ab55fd1c3-1.rp-"
             "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
             "local.",
             9092),
-          net::unresolved_address("172.31.14.150", 9092));
+          net::unresolved_address("localhost", 9093));
         mapping.kafka.emplace(
           net::unresolved_address(
             "rp-be4083ec48c0708970213f46f848576ab55fd1c3-2.rp-"
             "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
             "local.",
             9092),
-          net::unresolved_address("172.31.11.150", 9092));
+          net::unresolved_address("localhost", 9094));
 
         mapping.rpc.emplace(
           net::unresolved_address(
@@ -103,25 +152,27 @@ ss::future<> application::initialize(pandoscope::configuration cfg) {
             "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
             "local.",
             33145),
-          net::unresolved_address("172.31.11.76", 33145));
+          net::unresolved_address("localhost", 33145));
         mapping.rpc.emplace(
           net::unresolved_address(
             "rp-be4083ec48c0708970213f46f848576ab55fd1c3-1.rp-"
             "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
             "local.",
             33145),
-          net::unresolved_address("172.31.14.150", 33145));
+          net::unresolved_address("localhost", 33146));
         mapping.rpc.emplace(
           net::unresolved_address(
             "rp-be4083ec48c0708970213f46f848576ab55fd1c3-2.rp-"
             "be4083ec48c0708970213f46f848576ab55fd1c3.rp-37-58-139.svc.cluster."
             "local.",
             33145),
-          net::unresolved_address("172.31.11.150", 33145));
-
+          net::unresolved_address("localhost", 33147));
         std::vector<pandoscope::transformation> tr;
         tr.push_back(
           pandoscope::make_cluster_config_transformation(std::move(mapping)));
+        co_await _executor->execute(
+          pandoscope::reset_raft_kvstore_config(model::controller_ntp));
+
         co_await _executor->execute(
           pandoscope::transform_command(std::move(tr)));
 

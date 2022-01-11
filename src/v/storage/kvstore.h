@@ -11,6 +11,8 @@
 
 #pragma once
 #include "bytes/iobuf.h"
+#include "model/fundamental.h"
+#include "model/namespace.h"
 #include "seastarx.h"
 #include "storage/ntp_config.h"
 #include "storage/parser.h"
@@ -76,16 +78,31 @@ struct kvstore_config {
     config::binding<std::chrono::milliseconds> commit_interval;
     ss::sstring base_dir;
     debug_sanitize_files sanitize_fileops;
+    model::ntp ntp;
+
+    kvstore_config(
+      size_t max_segment_size,
+      config::binding<std::chrono::milliseconds> commit_interval,
+      ss::sstring base_dir,
+      debug_sanitize_files sanitize_fileops,
+      model::ntp ntp)
+      : max_segment_size(max_segment_size)
+      , commit_interval(commit_interval)
+      , base_dir(std::move(base_dir))
+      , sanitize_fileops(sanitize_fileops)
+      , ntp(std::move(ntp)) {}
 
     kvstore_config(
       size_t max_segment_size,
       config::binding<std::chrono::milliseconds> commit_interval,
       ss::sstring base_dir,
       debug_sanitize_files sanitize_fileops)
-      : max_segment_size(max_segment_size)
-      , commit_interval(commit_interval)
-      , base_dir(std::move(base_dir))
-      , sanitize_fileops(sanitize_fileops) {}
+      : kvstore_config(
+        max_segment_size,
+        commit_interval,
+        std::move(base_dir),
+        sanitize_fileops,
+        model::kvstore_ntp(ss::this_shard_id())) {}
 };
 
 class kvstore {

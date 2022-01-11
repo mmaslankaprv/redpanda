@@ -15,7 +15,6 @@ class transformation {
 public:
     struct impl {
         virtual ss::future<model::record_batch> apply(model::record_batch&) = 0;
-
         virtual bool is_applicable(const model::record_batch&) = 0;
         virtual ~impl() = default;
     };

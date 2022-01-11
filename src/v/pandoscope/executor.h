@@ -4,8 +4,12 @@
 #include "pandoscope/topics.h"
 #include "pandoscope/types.h"
 #include "storage/api.h"
+#include "storage/fwd.h"
 
 #include <seastar/util/log.hh>
+
+#include <memory>
+#include <vector>
 
 namespace pandoscope {
 
@@ -14,6 +18,7 @@ public:
     struct ctx {
         storage::api& storage;
         topics_state& topics;
+        std::vector<std::unique_ptr<storage::kvstore>>& kvs;
     };
     class command final {
     public:
@@ -49,7 +54,9 @@ public:
     }
 
 private:
-    ctx get_ctx() { return ctx{.storage = *_storage, .topics = _topics}; }
+    ctx get_ctx() {
+        return ctx{.storage = *_storage, .topics = _topics, .kvs = _kvs};
+    }
 
     ss::future<> do_execute(const ntp_revision&, command);
     ss::future<std::vector<ntp_revision>> build_ntp_list();
@@ -61,5 +68,6 @@ private:
     std::vector<ntp_revision> _ntps;
     configuration _cfg;
     topics_state _topics;
+    std::vector<std::unique_ptr<storage::kvstore>> _kvs;
 };
 } // namespace pandoscope

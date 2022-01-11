@@ -15,6 +15,7 @@
 #include <seastar/core/io_priority_class.hh>
 
 #include <chrono>
+#include <memory>
 #include <regex>
 namespace pandoscope {
 
@@ -44,9 +45,21 @@ storage::kvstore_config make_kvstore_config(const configuration& cfg) {
 
     return storage::kvstore_config(
       1024_MiB,
-      config::mock_binding<std::chrono::milliseconds>(1s),
+      config::mock_binding<std::chrono::milliseconds>(10ms),
       cfg.data_dir.c_str(),
       storage::debug_sanitize_files::yes);
+}
+
+storage::kvstore_config
+make_kvstore_config(const configuration& cfg, model::ntp ntp) {
+    using namespace std::chrono_literals;
+
+    return storage::kvstore_config(
+      1024_MiB,
+      config::mock_binding<std::chrono::milliseconds>(10ms),
+      cfg.data_dir.c_str(),
+      storage::debug_sanitize_files::yes,
+      std::move(ntp));
 }
 
 ss::future<std::vector<ntp_revision>> executor::build_ntp_list() {
@@ -156,6 +169,12 @@ ss::future<> executor::start() {
 
     for (auto& ntpr : all_ntps) {
         vlog(logger.info, "Found {}@{}", ntpr.ntp, ntpr.revision);
+        if (ntpr.ntp.tp.topic == model::kvstore_topic) {
+            vlog(logger.info, "Starting {} kvstore", ntpr.ntp);
+            _kvs.emplace_back(std::make_unique<storage::kvstore>(
+              make_kvstore_config(_cfg, ntpr.ntp)));
+            co_await _kvs.back()->start();
+        }
     }
 
     _ntps = filter_ntps(std::move(all_ntps));
@@ -212,5 +231,10 @@ executor::do_execute(const ntp_revision& ntp_rev, executor::command cmd) {
     }
 }
 
-ss::future<> executor::stop() { return _storage->stop(); }
+ss::future<> executor::stop() {
+    co_await _storage->stop();
+    for (auto& kv : _kvs) {
+        co_await kv->stop();
+    }
+}
 } // namespace pandoscope
