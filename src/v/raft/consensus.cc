@@ -654,44 +654,20 @@ replicate_stages consensus::do_replicate(
         return replicate_stages(errc::not_leader);
     }
 
-    if (opts.consistency == consistency_level::quorum_ack) {
-        _probe.replicate_requests_ack_all();
-
-        return wrap_stages_with_gate(
-          _bg,
-          _batcher.replicate(
-            expected_term, std::move(rdr), consistency_level::quorum_ack));
-    }
-
-    if (opts.consistency == consistency_level::leader_ack) {
-        _probe.replicate_requests_ack_leader();
-    } else {
+    switch (opts.consistency) {
+    case consistency_level::no_ack:
         _probe.replicate_requests_ack_none();
+        break;
+    case consistency_level::leader_ack:
+        _probe.replicate_requests_ack_leader();
+        break;
+    case consistency_level::quorum_ack:
+        _probe.replicate_requests_ack_all();
+        break;
     }
-    // For relaxed consistency, append data to leader disk without flush
-    // asynchronous replication is provided by Raft protocol recovery mechanism.
-
-    ss::promise<> enqueued;
-    auto enqueued_f = enqueued.get_future();
-    using ret_t = result<replicate_result>;
-
-    auto replicated = _op_lock.get_units().then_wrapped(
-      [this,
-       expected_term,
-       enqueued = std::move(enqueued),
-       lvl = opts.consistency,
-       rdr = std::move(rdr)](ss::future<ss::semaphore_units<>> f) mutable {
-          if (!f.failed()) {
-              enqueued.set_value();
-              return do_append_replicate_relaxed(
-                expected_term, std::move(rdr), lvl, f.get());
-          }
-          enqueued.set_exception(f.get_exception());
-          return ss::make_ready_future<ret_t>(errc::leader_append_failed);
-      });
 
     return wrap_stages_with_gate(
-      _bg, replicate_stages(std::move(enqueued_f), std::move(replicated)));
+      _bg, _batcher.replicate(expected_term, std::move(rdr), opts.consistency));
 }
 
 ss::future<result<replicate_result>> consensus::do_append_replicate_relaxed(
