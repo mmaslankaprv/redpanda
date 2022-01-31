@@ -113,28 +113,21 @@ ss::future<> recovery_stm::do_recover(ss::io_priority_class iopc) {
     auto follower_committed_match_index = meta.value()->match_committed_index();
     auto is_learner = meta.value()->is_learner;
 
-    // we do not have next entry for the follower yet, wait for next disk append
-    // of follower state change
-    if (lstats.dirty_offset < follower_next_offset) {
-        vlog(
-          _ctxlog.trace,
-          "Recovery status: waiting for node {} state change",
-          _node_id);
-        co_await meta.value()
-          ->follower_state_change
-          .wait([this] {
-              return state_changed() || _ptr->_transferring_leadership;
-          })
-          .handle_exception_type([this](const ss::broken_condition_variable&) {
-              _stop_requested = true;
-          })
-          .then([this] {
-              vlog(
-                _ctxlog.trace,
-                "Recovery status: finished waiting for node {} state "
-                "change",
-                _node_id);
-          });
+    meta = get_follower_meta();
+    if (!meta) {
+        _stop_requested = true;
+        co_return;
+    }
+
+    if (is_recovery_finished()) {
+        _stop_requested = true;
+        co_return;
+    }
+
+    // wait for another round
+    if (meta.value()->last_sent_offset == lstats.dirty_offset) {
+        co_await meta.value()->follower_state_change.wait();
+        co_return;
     }
 
     auto reader = co_await read_range_for_recovery(
@@ -148,20 +141,6 @@ ss::future<> recovery_stm::do_recover(ss::io_priority_class iopc) {
       std::move(*reader), should_flush(follower_committed_match_index));
 
     meta = get_follower_meta();
-
-    if (!meta) {
-        _stop_requested = true;
-        co_return;
-    }
-    /**
-     * since we do not stop recovery for relaxed consistency writes we
-     * have to notify recovery_finished condition variable when follower
-     * is up to date, but before finishing recovery
-     */
-    auto max_offset = _ptr->_log.offsets().dirty_offset();
-    if (meta.value()->match_index == max_offset) {
-        meta.value()->recovery_finished.broadcast();
-    }
 }
 
 bool recovery_stm::state_changed() {
@@ -169,8 +148,9 @@ bool recovery_stm::state_changed() {
     if (!meta) {
         return true;
     }
-    return _ptr->_log.offsets().dirty_offset
-           > meta.value()->last_dirty_log_index;
+    auto lstats = _ptr->_log.offsets();
+    return lstats.dirty_offset > meta.value()->last_dirty_log_index
+           || meta.value()->last_sent_offset == lstats.dirty_offset;
 }
 
 append_entries_request::flush_after_append
@@ -356,6 +336,7 @@ ss::future<> recovery_stm::handle_install_snapshot_reply(
     // snapshot received by the follower, continue with recovery
     (*meta)->match_index = _ptr->_last_snapshot_index;
     (*meta)->next_index = details::next_offset(_ptr->_last_snapshot_index);
+    (*meta)->last_sent_offset = _ptr->_last_snapshot_index;
     return close_snapshot_reader();
 }
 
@@ -413,7 +394,13 @@ ss::future<> recovery_stm::replicate(
         .last_visible_index = last_visible_idx},
       std::move(reader),
       flush);
+    auto meta = get_follower_meta();
 
+    if (!meta) {
+        _stop_requested = true;
+        return ss::now();
+    }
+    meta.value()->last_sent_offset = _last_batch_offset;
     _ptr->update_node_append_timestamp(_node_id);
 
     auto seq = _ptr->next_follower_sequence(_node_id);
@@ -509,24 +496,9 @@ bool recovery_stm::is_recovery_finished() {
     if (!meta) {
         return true;
     }
-
-    auto lstats = _ptr->_log.offsets();
-    auto log_end_offset = lstats.dirty_offset();
-
-    bool is_up_to_date = meta.value()->match_index == log_end_offset;
-    bool quorum_writes = _ptr->_visibility_upper_bound_index
-                         <= _ptr->_commit_index;
-    /**
-     * We do not stop recovery for relaxed consistency recoveries as we want
-     * recoveries to be send immediately after leader disk append. For low
-     * volume producers we might have to wait for the next heartbeat to send
-     * recovery request to follower which would lead to increased E2E latency
-     *
-     * The exception to this is leadership transfer: if our offset is up to
-     * date and leadership transfer is up to date, the transfer is probably
-     * waiting for us to complete, so we drop out.
-     */
-    return (is_up_to_date && (quorum_writes || _ptr->_transferring_leadership));
+    auto leader_dirty_offset = _ptr->_log.offsets().dirty_offset;
+    return meta.value()->last_dirty_log_index >= leader_dirty_offset
+           && meta.value()->match_index == leader_dirty_offset;
 }
 
 ss::future<> recovery_stm::apply() {
