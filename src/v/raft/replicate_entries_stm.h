@@ -91,7 +91,9 @@ public:
     /// caller have to pass semaphore units, the apply call will do the
     /// fine grained locking on behalf of the caller
     ss::future<result<replicate_result>>
-      apply(std::vector<ss::semaphore_units<>>);
+      append_to_leader(std::vector<ss::semaphore_units<>>);
+
+    ss::future<result<replicate_result>> wait_for_majority();
 
     /// waits for the remaining background futures
     ss::future<> wait();
@@ -110,6 +112,9 @@ private:
     clock_type::time_point append_entries_timeout();
     /// This append will happen under the lock
     ss::future<result<storage::append_result>> append_to_self();
+
+    result<replicate_result> build_replicate_result() const;
+
     consensus* _ptr;
     /// we keep a copy around until we finish the retries
     std::unique_ptr<append_entries_request> _req;
@@ -121,6 +126,8 @@ private:
     model::offset _dirty_offset;
     model::offset _initial_committed_offset;
     ss::lw_shared_ptr<std::vector<ss::semaphore_units<>>> _units;
+    std::optional<result<storage::append_result>> _append_result;
+    uint16_t _requests_count = 0;
 };
 
 } // namespace raft

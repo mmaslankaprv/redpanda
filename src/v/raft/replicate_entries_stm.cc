@@ -217,7 +217,8 @@ inline bool replicate_entries_stm::should_skip_follower_request(vnode id) {
     return false;
 }
 
-ss::future<result<replicate_result>> replicate_entries_stm::apply(units_t u) {
+ss::future<result<replicate_result>>
+replicate_entries_stm::append_to_leader(units_t u) {
     // first append lo leader log, no flushing
     auto cfg = _ptr->config();
     cfg.for_each_broker_id([this](const vnode& rni) {
@@ -228,83 +229,92 @@ ss::future<result<replicate_result>> replicate_entries_stm::apply(units_t u) {
         }
     });
     _units = ss::make_lw_shared<units_t>(std::move(u));
-    return append_to_self()
-      .then([this, cfg = std::move(cfg)](
-              result<storage::append_result> append_result) mutable {
-          if (!append_result) {
-              return ss::make_ready_future<result<storage::append_result>>(
-                append_result);
-          }
-          _dirty_offset = append_result.value().last_offset;
-          // store committed offset to check if it advanced
-          _initial_committed_offset = _ptr->committed_offset();
-          // dispatch requests to followers & leader flush
-          uint16_t requests_count = 0;
-          cfg.for_each_broker_id([this, &requests_count](const vnode& rni) {
-              // We are not dispatching request to followers that are
-              // recovering
-              if (should_skip_follower_request(rni)) {
-                  vlog(
-                    _ctxlog.trace,
-                    "Skipping sending append request to {}",
-                    rni);
-                  _ptr->update_suppress_heartbeats(
-                    rni, _followers_seq[rni], heartbeats_suppressed::no);
-                  return;
-              }
-              ++requests_count;
-              (void)dispatch_one(rni); // background
-          });
-          // Wait until all RPCs will be dispatched
-          return _dispatch_sem.wait(requests_count)
-            .then([this, append_result]() mutable {
-                _req.reset();
-                _units.release();
-                return append_result;
-            });
-      })
-      .then([this](result<storage::append_result> append_result) {
-          if (!append_result) {
-              return ss::make_ready_future<result<replicate_result>>(
-                append_result.error());
-          }
-          // this is happening outside of _opsem
-          // store offset and term of an appended entry
-          auto appended_offset = append_result.value().last_offset;
-          auto appended_term = append_result.value().last_term;
-          /**
-           * we have to finish replication when committed offset is greater or
-           * equal to the appended offset or when term have changed after
-           * commit_index update, if that happend it means that entry might
-           * have been either commited or truncated
-           */
-          auto stop_cond = [this, appended_offset, appended_term] {
-              const auto current_committed_offset = _ptr->committed_offset();
-              const auto committed = current_committed_offset
-                                     >= appended_offset;
-              const auto truncated = _ptr->term() > appended_term
-                                     && current_committed_offset
-                                          > _initial_committed_offset
-                                     && _ptr->_log.get_term(appended_offset)
-                                          != appended_term;
+    _append_result = co_await append_to_self();
 
-              return committed || truncated;
-          };
-          return _ptr->_commit_index_updated.wait(stop_cond)
-            .then([this, appended_offset, appended_term] {
-                return process_result(appended_offset, appended_term);
-            })
-            .handle_exception_type(
-              [this](const ss::broken_condition_variable&) {
-                  vlog(
-                    _ctxlog.debug,
-                    "Replication of entries with last offset: {} aborted - "
-                    "shutting down",
-                    _dirty_offset);
-                  return result<replicate_result>(
-                    make_error_code(errc::shutting_down));
-              });
-      });
+    if (!_append_result) {
+        co_return build_replicate_result();
+    }
+    _dirty_offset = _append_result->value().last_offset;
+    // store committed offset to check if it advanced
+    _initial_committed_offset = _ptr->committed_offset();
+    // dispatch requests to followers & leader flush
+    cfg.for_each_broker_id([this](const vnode& rni) {
+        // We are not dispatching request to followers that are
+        // recovering
+        if (should_skip_follower_request(rni)) {
+            _ptr->update_suppress_heartbeats(
+              rni, _followers_seq[rni], heartbeats_suppressed::no);
+            return;
+        }
+        ++_requests_count;
+        (void)dispatch_one(rni); // background
+    });
+
+    // wait for the requests to be dispatched in background and then release
+    // units
+    (void)ss::with_gate(_req_bg, [this]() -> ss::future<> {
+        // Wait until all RPCs will be dispatched
+        co_await _dispatch_sem.wait(_requests_count);
+        // release memory reservations, and destroy data
+        _req.reset();
+        _units.release();
+    });
+
+    co_return build_replicate_result();
+}
+
+result<replicate_result> replicate_entries_stm::build_replicate_result() const {
+    vassert(
+      _append_result,
+      "Leader append result must be present before returning any result to "
+      "caller");
+
+    if (_append_result->has_error()) {
+        return _append_result->error();
+    }
+
+    return replicate_result{.last_offset = _append_result->value().last_offset};
+}
+
+ss::future<result<replicate_result>>
+replicate_entries_stm::wait_for_majority() {
+    if (!_append_result) {
+        co_return build_replicate_result();
+    }
+    // this is happening outside of _opsem
+    // store offset and term of an appended entry
+    auto appended_offset = _append_result->value().last_offset;
+    auto appended_term = _append_result->value().last_term;
+    /**
+     * we have to finish replication when committed offset is greater or
+     * equal to the appended offset or when term have changed after
+     * commit_index update, if that happend it means that entry might
+     * have been either commited or truncated
+     */
+    auto stop_cond = [this, appended_offset, appended_term] {
+        const auto current_committed_offset = _ptr->committed_offset();
+        const auto committed = current_committed_offset >= appended_offset;
+        const auto truncated = _ptr->term() > appended_term
+                               && current_committed_offset
+                                    > _initial_committed_offset
+                               && _ptr->_log.get_term(appended_offset)
+                                    != appended_term;
+
+        return committed || truncated;
+    };
+    try {
+        co_await _ptr->_commit_index_updated.wait(stop_cond);
+        co_return process_result(appended_offset, appended_term);
+
+    } catch (const ss::broken_condition_variable&) {
+        vlog(
+          _ctxlog.debug,
+          "Replication of entries with last offset: {} aborted - "
+          "shutting down",
+          _dirty_offset);
+        co_return result<replicate_result>(
+          make_error_code(errc::shutting_down));
+    }
 }
 
 result<replicate_result> replicate_entries_stm::process_result(
@@ -352,8 +362,7 @@ result<replicate_result> replicate_entries_stm::process_result(
       "Replication success, last offset: {}, term: {}",
       appended_offset,
       appended_term);
-    return ret_t(
-      replicate_result{.last_offset = model::offset(appended_offset)});
+    return build_replicate_result();
 }
 
 ss::future<> replicate_entries_stm::wait() { return _req_bg.close(); }
