@@ -125,7 +125,7 @@ ss::future<> recovery_stm::do_recover(ss::io_priority_class iopc) {
     }
 
     // wait for another round
-    if (meta.value()->last_sent_offset == lstats.dirty_offset) {
+    if (meta.value()->last_sent_offset >= lstats.dirty_offset) {
         co_await meta.value()->follower_state_change.wait();
         co_return;
     }

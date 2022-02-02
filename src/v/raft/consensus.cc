@@ -187,7 +187,9 @@ void consensus::shutdown_input() {
 ss::future<> consensus::stop() {
     vlog(_ctxlog.info, "Stopping");
     shutdown_input();
-
+    for (auto& idx : _fstats) {
+        idx.second.follower_state_change.broken();
+    }
     return _event_manager.stop()
       .then([this] { return _append_requests_buffer.stop(); })
       .then([this] { return _batcher.stop(); })
