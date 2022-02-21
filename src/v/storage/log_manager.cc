@@ -274,11 +274,12 @@ ss::future<> log_manager::remove(model::ntp ntp) {
         auto ntp_dir = lg.config().work_directory();
         ss::sstring topic_dir = lg.config().topic_directory().string();
         return lg.remove()
-          .then([dir = std::move(ntp_dir)] { return ss::remove_file(dir); })
+          .then([dir = ntp_dir] { return ss::remove_file(dir); })
           .then([this, dir = std::move(topic_dir)]() mutable {
+              return dispatch_topic_dir_deletion(std::move(dir));
+
               // We always dispatch topic directory deletion to core 0 as
               // requests may come from different cores
-              return dispatch_topic_dir_deletion(std::move(dir));
           })
           .finally([lg] {});
     });
@@ -287,19 +288,31 @@ ss::future<> log_manager::remove(model::ntp ntp) {
 ss::future<> log_manager::dispatch_topic_dir_deletion(ss::sstring dir) {
     return ss::smp::submit_to(0, [dir = std::move(dir)]() mutable {
         static thread_local mutex fs_lock;
-        return fs_lock.with([dir = std::move(dir)] {
-            return ss::file_exists(dir).then([dir](bool exists) {
-                if (!exists) {
-                    return ss::now();
-                }
-                return directory_walker::empty(std::filesystem::path(dir))
-                  .then([dir](bool empty) {
-                      if (!empty) {
-                          return ss::now();
-                      }
-                      return ss::remove_file(dir);
+        return fs_lock.with([dir = std::move(dir)]() mutable {
+            return ss::file_exists(dir)
+              .then([dir](bool exists) mutable {
+                  if (!exists) {
+                      return ss::now();
+                  }
+                  return ss::sync_directory(dir).then([dir = std::move(dir)] {
+                      return directory_walker::empty(std::filesystem::path(dir))
+                        .then([dir](bool empty) {
+                            if (!empty) {
+                                return ss::now();
+                            }
+                            return ss::remove_file(dir);
+                        });
                   });
-            });
+              })
+              .handle_exception([dir](std::exception_ptr e) {
+                  stlog.error(
+                    "DBG: unable to delete topic directory: {}  - {}", dir, e);
+                  return directory_walker::walk(
+                    dir, [](ss::directory_entry de) {
+                        stlog.error("DBG: FILE: {}, {}", de.name, de.type);
+                        return ss::now();
+                    });
+              });
         });
     });
 }
