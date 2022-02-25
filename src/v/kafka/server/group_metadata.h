@@ -297,7 +297,11 @@ public:
 private:
     std::unique_ptr<impl> _impl;
 };
+
+group_metadata_serializer make_backward_compatible_serializer();
+
 } // namespace kafka
+
 namespace std {
 template<>
 struct hash<kafka::offset_metadata_key> {
