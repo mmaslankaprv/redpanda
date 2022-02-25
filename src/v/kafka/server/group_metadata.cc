@@ -25,7 +25,6 @@
 #include <fmt/core.h>
 #include <fmt/ostream.h>
 
-
 namespace kafka {
 
 /**
@@ -69,16 +68,14 @@ void group_metadata_key::encode(
     writer.write(v.group_id);
 }
 
-group_metadata_key
-group_metadata_key::decode(request_reader& reader) {
+group_metadata_key group_metadata_key::decode(request_reader& reader) {
     group_metadata_key ret;
     read_metadata_version(reader);
     ret.group_id = kafka::group_id(reader.read_string());
     return ret;
 }
 
-void member_state::encode(
-  response_writer& writer, const member_state& v) {
+void member_state::encode(response_writer& writer, const member_state& v) {
     writer.write(v.version);
     writer.write(v.id);
     writer.write(v.instance_id);
@@ -90,8 +87,7 @@ void member_state::encode(
     writer.write(iobuf_to_bytes(v.assignment.copy()));
 }
 
-member_state
-member_state::decode(request_reader& reader) {
+member_state member_state::decode(request_reader& reader) {
     member_state ret;
     read_metadata_version(reader);
     ret.id = member_id(reader.read_string());
@@ -118,14 +114,12 @@ void group_metadata_value::encode(
     writer.write(v.leader);
     writer.write(v.state_timestamp);
     writer.write_array(
-      v.members,
-      [](const member_state& member, response_writer writer) {
+      v.members, [](const member_state& member, response_writer writer) {
           member_state::encode(writer, member);
       });
 }
 
-group_metadata_value
-group_metadata_value::decode(request_reader& reader) {
+group_metadata_value group_metadata_value::decode(request_reader& reader) {
     group_metadata_value ret;
     read_metadata_version(reader);
     ret.protocol_type = kafka::protocol_type(reader.read_string());
@@ -139,9 +133,8 @@ group_metadata_value::decode(request_reader& reader) {
         ret.leader = kafka::member_id(std::move(leader_opt.value()));
     }
     ret.state_timestamp = model::timestamp(reader.read_int64());
-    ret.members = reader.read_array([](request_reader& reader) {
-        return member_state::decode(reader);
-    });
+    ret.members = reader.read_array(
+      [](request_reader& reader) { return member_state::decode(reader); });
 
     return ret;
 }
@@ -154,8 +147,7 @@ void offset_metadata_key::encode(
     writer.write(v.partition);
 }
 
-offset_metadata_key
-offset_metadata_key::decode(request_reader& reader) {
+offset_metadata_key offset_metadata_key::decode(request_reader& reader) {
     offset_metadata_key ret;
     read_metadata_version(reader);
     ret.group_id = kafka::group_id(reader.read_string());
@@ -174,8 +166,7 @@ void offset_metadata_value::encode(
     writer.write(v.expire_timestamp);
 }
 
-offset_metadata_value
-offset_metadata_value::decode(request_reader& reader) {
+offset_metadata_value offset_metadata_value::decode(request_reader& reader) {
     offset_metadata_value ret;
     read_metadata_version(reader);
     ret.offset = model::offset(reader.read_int64());
@@ -186,8 +177,7 @@ offset_metadata_value::decode(request_reader& reader) {
     return ret;
 }
 
-std::ostream&
-operator<<(std::ostream& o, const member_state& v) {
+std::ostream& operator<<(std::ostream& o, const member_state& v) {
     fmt::print(
       o,
       "{{id: {}, instance_id: {}, client_id: {}, client_host: {}, "
@@ -203,13 +193,11 @@ operator<<(std::ostream& o, const member_state& v) {
       v.assignment.size_bytes());
     return o;
 }
-std::ostream&
-operator<<(std::ostream& o, const group_metadata_key& v) {
+std::ostream& operator<<(std::ostream& o, const group_metadata_key& v) {
     fmt::print(o, "{{group_id: {}}}", v.group_id);
     return o;
 }
-std::ostream&
-operator<<(std::ostream& o, const group_metadata_value& v) {
+std::ostream& operator<<(std::ostream& o, const group_metadata_value& v) {
     fmt::print(
       o,
       "{{protocol_type: {}, generation: {}, protocol: {}, leader: {}, "
@@ -222,8 +210,7 @@ operator<<(std::ostream& o, const group_metadata_value& v) {
       v.members);
     return o;
 }
-std::ostream&
-operator<<(std::ostream& o, const offset_metadata_key& v) {
+std::ostream& operator<<(std::ostream& o, const offset_metadata_key& v) {
     fmt::print(
       o,
       "{{group_id: {}, topic: {}, partition: {}}}",
@@ -232,8 +219,7 @@ operator<<(std::ostream& o, const offset_metadata_key& v) {
       v.partition);
     return o;
 }
-std::ostream&
-operator<<(std::ostream& o, const offset_metadata_value& v) {
+std::ostream& operator<<(std::ostream& o, const offset_metadata_value& v) {
     fmt::print(
       o,
       "{{offset: {}, leader_epoch: {}, metadata: {}, commit_timestap: {}, "
@@ -245,3 +231,21 @@ operator<<(std::ostream& o, const offset_metadata_value& v) {
       v.expire_timestamp);
     return o;
 }
+namespace old {
+std::ostream& operator<<(std::ostream& os, const group_log_offset_key& key) {
+    fmt::print(
+      os,
+      "group {} topic {} partition {}",
+      key.group(),
+      key.topic(),
+      key.partition());
+    return os;
+}
+
+std::ostream&
+operator<<(std::ostream& os, const group_log_offset_metadata& md) {
+    fmt::print(os, "offset {}", md.offset());
+    return os;
+}
+} // namespace old
+} // namespace kafka
