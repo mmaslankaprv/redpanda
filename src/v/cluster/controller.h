@@ -17,6 +17,7 @@
 #include "cluster/fwd.h"
 #include "cluster/health_manager.h"
 #include "cluster/health_monitor_frontend.h"
+#include "cluster/partition_manager.h"
 #include "cluster/scheduling/leader_balancer.h"
 #include "cluster/topic_updates_dispatcher.h"
 #include "raft/group_manager.h"
@@ -87,6 +88,16 @@ public:
     }
 
     ss::sharded<feature_table>& get_feature_table() { return _feature_table; }
+
+    ss::sharded<partition_manager>& get_partition_manager() {
+        return _partition_manager;
+    }
+
+    ss::sharded<shard_table>& get_shard_table() { return _shard_table; }
+
+    ss::sharded<ss::abort_source>& get_abort_source() { return _as; }
+
+    bool is_raft0_leader() const { return _raft0->is_leader(); }
 
     ss::future<> wire_up();
 

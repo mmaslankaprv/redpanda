@@ -20,6 +20,8 @@ std::string_view to_string_view(feature f) {
     switch (f) {
     case feature::central_config:
         return "central_config";
+    case feature::consumer_offsets:
+        return "consumer_offsets";
     }
     __builtin_unreachable();
 }

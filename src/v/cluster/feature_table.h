@@ -22,6 +22,7 @@ namespace cluster {
 
 enum class feature {
     central_config = 0x1,
+    consumer_offsets = 0x2,
 };
 
 std::string_view to_string_view(feature);

@@ -12,18 +12,30 @@
 #include "kafka/server/group_metadata.h"
 
 #include "bytes/bytes.h"
+#include "cluster/controller.h"
+#include "cluster/partition_manager.h"
+#include "cluster/shard_table.h"
+#include "cluster/topics_frontend.h"
 #include "kafka/protocol/request_reader.h"
 #include "kafka/protocol/response_writer.h"
 #include "kafka/types.h"
 #include "model/adl_serde.h"
 #include "model/fundamental.h"
+#include "model/namespace.h"
 #include "model/timestamp.h"
 #include "reflection/adl.h"
+#include "ssx/future-util.h"
 #include "utils/to_string.h"
 #include "vassert.h"
 
+#include <seastar/core/sleep.hh>
+
+#include <absl/container/node_hash_map.h>
 #include <fmt/core.h>
 #include <fmt/ostream.h>
+
+#include <chrono>
+#include <cstdint>
 
 namespace kafka {
 

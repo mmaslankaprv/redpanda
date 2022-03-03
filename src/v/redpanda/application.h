@@ -74,6 +74,7 @@ public:
 
     ss::sharded<cluster::metadata_cache> metadata_cache;
     ss::sharded<kafka::group_router> group_router;
+    ss::sharded<kafka::group_router> co_group_router;
     ss::sharded<cluster::shard_table> shard_table;
     ss::sharded<storage::api> storage;
     std::unique_ptr<coproc::api> coprocessing;
@@ -84,6 +85,7 @@ public:
     ss::sharded<cluster::metadata_dissemination_service>
       md_dissemination_service;
     ss::sharded<kafka::coordinator_ntp_mapper> coordinator_ntp_mapper;
+    ss::sharded<kafka::coordinator_ntp_mapper> co_coordinator_ntp_mapper;
     std::unique_ptr<cluster::controller> controller;
     ss::sharded<kafka::fetch_session_cache> fetch_session_cache;
     smp_groups smp_service_groups;
@@ -142,6 +144,7 @@ private:
 
     ss::sharded<rpc::connection_cache> _connection_cache;
     ss::sharded<kafka::group_manager> _group_manager;
+    ss::sharded<kafka::group_manager> _co_group_manager;
     ss::sharded<net::server> _rpc;
     ss::sharded<admin_server> _admin;
     ss::sharded<net::server> _kafka_server;
@@ -150,6 +153,7 @@ private:
     std::unique_ptr<pandaproxy::schema_registry::api> _schema_registry;
     ss::sharded<storage::compaction_controller> _compaction_controller;
     ss::sharded<archival::upload_controller> _archival_upload_controller;
+    std::unique_ptr<cluster::migrations_manager> _migrations_manager;
 
     ss::metrics::metric_groups _metrics;
     std::unique_ptr<kafka::rm_group_proxy_impl> _rm_group_proxy;

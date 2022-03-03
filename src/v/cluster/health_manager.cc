@@ -192,8 +192,12 @@ void health_manager::tick() {
                  * other internal topics.
                  */
                 auto ok = co_await ensure_topic_replication(
-                  model::kafka_group_nt);
+                  model::kafka_consumer_offsets_tn);
 
+                if (ok) {
+                    ok = co_await ensure_topic_replication(
+                      model::id_allocator_nt);
+                }
                 if (ok) {
                     ok = co_await ensure_topic_replication(
                       model::id_allocator_nt);
