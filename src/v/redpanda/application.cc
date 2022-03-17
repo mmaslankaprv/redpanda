@@ -832,8 +832,10 @@ void application::wire_up_redpanda_services() {
      */
     _deferred.emplace_back([this] {
         if (_rpc.local_is_initialized()) {
+            fmt::print("DBG: waiting for rcp server shutdown\n");
             _rpc.invoke_on_all(&net::server::wait_for_shutdown).get();
             _rpc.stop().get();
+            fmt::print("DBG: rpc server shutdown\n");
         }
     });
 
@@ -843,9 +845,11 @@ void application::wire_up_redpanda_services() {
 
     _deferred.emplace_back([this] {
         if (_kafka_server.local_is_initialized()) {
+            fmt::print("DBG: waiting for kafka server shutdown\n");
             _kafka_server.invoke_on_all(&net::server::wait_for_shutdown).get();
             _kafka_server.stop().get();
             _kafka_conn_quotas.stop().get();
+            fmt::print("DBG: kafka server shutdown\n");
         }
     });
 

@@ -128,7 +128,11 @@ private:
     template<typename Service, typename... Args>
     ss::future<> construct_service(ss::sharded<Service>& s, Args&&... args) {
         auto f = s.start(std::forward<Args>(args)...);
-        _deferred.emplace_back([&s] { s.stop().get(); });
+        _deferred.emplace_back([&s] {
+            fmt::print("DBG: stopping {}\n", typeid(s).name());
+            s.stop().get();
+            fmt::print("DBG: stopped {}\n", typeid(s).name());
+        });
         return f;
     }
 
@@ -136,8 +140,10 @@ private:
     void construct_single_service(std::unique_ptr<Service>& s, Args&&... args) {
         s = std::make_unique<Service>(std::forward<Args>(args)...);
         _deferred.emplace_back([&s] {
+            fmt::print("DBG: stopping {}\n", typeid(*s.get()).name());
             s->stop().get();
             s.reset();
+            fmt::print("DBG: stopped {}\n", typeid(*s.get()).name());
         });
     }
 

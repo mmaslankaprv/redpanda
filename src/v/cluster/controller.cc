@@ -385,6 +385,7 @@ ss::future<> controller::start() {
 }
 
 ss::future<> controller::shutdown_input() {
+    vlog(clusterlog.info, "shutdown input");
     _raft0->shutdown_input();
     return _as.invoke_on_all(&ss::abort_source::request_abort);
 }
@@ -403,34 +404,97 @@ ss::future<> controller::stop() {
     return f.then([this] {
         auto stop_leader_balancer = _leader_balancer ? _leader_balancer->stop()
                                                      : ss::now();
+        vlog(clusterlog.info, "stopping leader balancer");
         return stop_leader_balancer
-          .then([this] { return _partition_balancer.stop(); })
-          .then([this] { return _metrics_reporter.stop(); })
-          .then([this] { return _feature_manager.stop(); })
-          .then([this] { return _hm_frontend.stop(); })
-          .then([this] { return _hm_backend.stop(); })
-          .then([this] { return _health_manager.stop(); })
-          .then([this] { return _members_backend.stop(); })
-          .then([this] { return _config_manager.stop(); })
-          .then([this] { return _api.stop(); })
-          .then([this] { return _backend.stop(); })
-          .then([this] { return _tp_frontend.stop(); })
-          .then([this] { return _security_frontend.stop(); })
-          .then([this] { return _data_policy_frontend.stop(); })
-          .then([this] { return _members_frontend.stop(); })
-          .then([this] { return _config_frontend.stop(); })
-          .then([this] { return _feature_backend.stop(); })
-          .then([this] { return _stm.stop(); })
-          .then([this] { return _authorizer.stop(); })
-          .then([this] { return _credentials.stop(); })
+          .then([this] {
+              vlog(clusterlog.info, "stopping partition balancer");
+              return _partition_balancer.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping _metrics_reporter");
+              return _metrics_reporter.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping _feature_manager");
+              return _feature_manager.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping health monitor frontend");
+              return _hm_frontend.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping health monitor backend");
+              return _hm_backend.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping health manager");
+              return _health_manager.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping members backend");
+              return _members_backend.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping config manager");
+              return _config_manager.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping api");
+              return _api.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping backend");
+              return _backend.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping topics frontend");
+              return _tp_frontend.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping securing frontend");
+              return _security_frontend.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping data policy frontend");
+              return _data_policy_frontend.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping members frontend");
+              return _members_frontend.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping config frontend");
+              return _config_frontend.stop();
+          }).then([this] {
+              vlog(clusterlog.info, "stopping config frontend");
+              return _feature_backend.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping stm");
+              return _stm.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping authorizer");
+              return _authorizer.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping credentials");
+              return _credentials.stop();
+          })
           .then([this] { return _tp_state.stop(); })
-          .then([this] { return _members_manager.stop(); })
-          .then([this] { return _drain_manager.stop(); })
+          .then([this] {
+              vlog(clusterlog.info, "stopping members manager");
+              return _members_manager.stop();
+          })
+          .then([this] {
+              vlog(clusterlog.info, "stopping drain manager");
+              return _drain_manager.stop();
+          })
           .then([this] { return _partition_allocator.stop(); })
           .then([this] { return _partition_leaders.stop(); })
           .then([this] { return _members_table.stop(); })
-          .then([this] { return _gate.close(); })
-          .then([this] { return _as.stop(); });
+          .then([this] { return _as.stop(); })
+          .finally([] { vlog(clusterlog.info, "stopped"); });
     });
 }
 
