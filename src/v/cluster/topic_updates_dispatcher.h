@@ -11,11 +11,14 @@
 
 #pragma once
 #include "cluster/commands.h"
+#include "cluster/fwd.h"
 #include "cluster/scheduling/partition_allocator.h"
 #include "cluster/topic_table.h"
 #include "model/record.h"
 
 #include <seastar/core/sharded.hh>
+
+#include <vector>
 
 namespace cluster {
 
@@ -77,7 +80,7 @@ private:
 
     ss::future<> update_leaders_with_estimates(std::vector<ntp_leader> leaders);
     void update_allocations(std::vector<partition_assignment>);
-    void deallocate_topic(const model::topic_metadata&);
+    void deallocate_topic(const topic_metadata&);
     void reallocate_partition(
       const std::vector<model::broker_shard>&,
       const std::vector<model::broker_shard>&);

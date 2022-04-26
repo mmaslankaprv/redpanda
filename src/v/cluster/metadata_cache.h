@@ -14,6 +14,7 @@
 #include "cluster/fwd.h"
 #include "cluster/health_monitor_types.h"
 #include "cluster/partition_leaders_table.h"
+#include "cluster/topic_table.h"
 #include "cluster/types.h"
 #include "model/fundamental.h"
 #include "model/metadata.h"
@@ -25,6 +26,8 @@
 #include <seastar/core/sharded.hh>
 
 #include <absl/container/flat_hash_map.h>
+
+#include <functional>
 
 namespace cluster {
 
@@ -72,8 +75,16 @@ public:
     ///\brief Returns metadata of single topic.
     ///
     /// If topic does not exists it returns an empty optional
-    std::optional<model::topic_metadata> get_topic_metadata(
+    std::optional<model::topic_metadata> get_model_topic_metadata(
       model::topic_namespace_view, with_leaders = with_leaders::yes) const;
+    ///\brief Returns metadata of single topic.
+    ///
+    /// If topic does not exists it returns an empty optional
+    std::optional<cluster::topic_metadata>
+      get_topic_metadata(model::topic_namespace_view) const;
+
+    std::optional<std::reference_wrapper<const cluster::topic_metadata>>
+      get_topic_metadata_ref(model::topic_namespace_view) const;
 
     ///\brief Returns configuration of single topic.
     ///
@@ -87,9 +98,7 @@ public:
     std::optional<model::timestamp_type>
       get_topic_timestamp_type(model::topic_namespace_view) const;
 
-    /// Returns metadata of all topics.
-    std::vector<model::topic_metadata>
-      all_topics_metadata(with_leaders = with_leaders::yes) const;
+    const topic_table::underlying_t& all_topics_metadata() const;
 
     /// Returns all brokers, returns copy as the content of broker can change
     std::vector<broker_ptr> all_brokers() const;
@@ -105,6 +114,7 @@ public:
     std::optional<broker_ptr> get_broker(model::node_id) const;
 
     bool contains(model::topic_namespace_view, model::partition_id) const;
+    bool contains(model::topic_namespace_view) const;
 
     bool contains(const model::ntp& ntp) const {
         return contains(model::topic_namespace_view(ntp), ntp.tp.partition);
