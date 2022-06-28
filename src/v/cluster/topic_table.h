@@ -207,6 +207,18 @@ public:
         return _update_in_progress;
     }
 
+    /**
+     * Lists all NTPs that replicas are being move to a node
+     */
+    std::vector<model::ntp> ntps_moving_to_node(model::node_id) const;
+
+    /**
+     * Lists all NTPs that replicas are being move from a node
+     */
+    std::vector<model::ntp> ntps_moving_from_node(model::node_id) const;
+
+    std::vector<model::ntp> all_updates_in_progress() const;
+
 private:
     struct waiter {
         explicit waiter(uint64_t id)
