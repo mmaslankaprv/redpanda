@@ -399,11 +399,13 @@ void partition_allocator::update_allocation_state(
 
 void partition_allocator::add_allocations(
   const std::vector<model::broker_shard>& to_add) {
+    vlog(clusterlog.info, "DBG: adding: {}", to_add);
     _state->apply_update(to_add, raft::group_id{});
 }
 
 void partition_allocator::remove_allocations(
   const std::vector<model::broker_shard>& to_remove) {
+    vlog(clusterlog.info, "DBG: removing: {}", to_remove);
     for (const auto& bs : to_remove) {
         _state->deallocate(bs);
     }

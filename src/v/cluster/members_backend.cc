@@ -23,6 +23,7 @@
 #include <seastar/util/optimized_optional.hh>
 
 #include <absl/container/node_hash_set.h>
+#include <fmt/core.h>
 #include <fmt/ostream.h>
 
 #include <cstdint>
