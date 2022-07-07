@@ -96,6 +96,15 @@ class NodeOperationFuzzyTest(EndToEndTest):
     @parametrize(enable_failures=True)
     @parametrize(enable_failures=False)
     def test_node_operations(self, enable_failures):
+
+        # scaling parameters
+
+        producer_throughput = 10000
+        initial_topic_count = 10
+        admin_ops_interval_sec = 3
+        node_operation_timeout = 360
+        node_operations = 20
+
         # allocate 5 nodes for the cluster
         self.redpanda = RedpandaService(
             self.test_context,
@@ -108,16 +117,16 @@ class NodeOperationFuzzyTest(EndToEndTest):
 
         self.redpanda.start()
         # create some topics
-        topics = self._create_random_topics(10)
+        topics = self._create_random_topics(initial_topic_count)
         self.redpanda.logger.info(f"using topics: {topics}")
         # select one of the topics to use in consumer/producer
         self.topic = random.choice(topics).name
 
-        self.start_producer(1, throughput=100)
+        self.start_producer(1, throughput=producer_throughput)
         self.start_consumer(1)
         self.await_startup()
-        admin_fuzz = AdminOperationsFuzzer(self.redpanda,
-                                           operations_interval=3)
+        admin_fuzz = AdminOperationsFuzzer(
+            self.redpanda, operations_interval=admin_ops_interval_sec)
 
         admin_fuzz.start()
         self.active_nodes = set(
@@ -128,7 +137,6 @@ class NodeOperationFuzzyTest(EndToEndTest):
             self.ids_mapping[self.redpanda.idx(n)] = self.redpanda.idx(n)
         self.next_id = sorted(list(self.ids_mapping.keys()))[-1] + 1
         self.redpanda.logger.info(f"Initial ids mapping: {self.ids_mapping}")
-        NODE_OP_TIMEOUT = 360
 
         def get_next_id():
             id = self.next_id
@@ -191,7 +199,7 @@ class NodeOperationFuzzyTest(EndToEndTest):
                     return False
 
             wait_until(decommissioned,
-                       timeout_sec=NODE_OP_TIMEOUT,
+                       timeout_sec=node_operation_timeout,
                        backoff_sec=2)
             admin = Admin(self.redpanda)
 
@@ -218,7 +226,7 @@ class NodeOperationFuzzyTest(EndToEndTest):
                 return node_removed_cnt >= majority
 
             wait_until(node_removed,
-                       timeout_sec=NODE_OP_TIMEOUT,
+                       timeout_sec=node_operation_timeout,
                        backoff_sec=2)
             self.redpanda.stop_node(self.redpanda.get_node(idx))
 
@@ -276,10 +284,10 @@ class NodeOperationFuzzyTest(EndToEndTest):
                 return id in per_node
 
             wait_until(has_new_replicas,
-                       timeout_sec=NODE_OP_TIMEOUT,
+                       timeout_sec=node_operation_timeout,
                        backoff_sec=2)
 
-        work = self.generate_random_workload(30,
+        work = self.generate_random_workload(node_operations,
                                              available_nodes=self.active_nodes)
 
         self.redpanda.logger.info(f"node operations to execute: {work}")
