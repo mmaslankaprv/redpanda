@@ -515,6 +515,12 @@ ss::future<> members_backend::reconcile() {
 
         const auto allocator_empty = _allocator.local().is_empty(
           meta.update.id);
+        if (!allocator_empty) {
+            for (auto& n : _allocator.local().state().allocation_nodes()) {
+                vlog(
+                  clusterlog.info, "DBG: node {} - {}\n", n.first, *n.second);
+            }
+        }
 
         if (
           is_draining && all_reallocations_finished && allocator_empty
@@ -543,6 +549,15 @@ ss::future<> members_backend::reconcile() {
               all_reallocations_finished,
               allocator_empty,
               updates_in_progress);
+            if (!allocator_empty && all_reallocations_finished) {
+                // recalculate reallocations
+                vlog(
+                  clusterlog.info,
+                  "[update: {}] decommissioning in progress. recalculating "
+                  "reallocations",
+                  meta.update);
+                calculate_reallocations(meta);
+            }
         }
     }
 }
