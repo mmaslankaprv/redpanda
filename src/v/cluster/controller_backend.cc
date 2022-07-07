@@ -1197,9 +1197,15 @@ ss::future<std::error_code> controller_backend::cancel_replica_set_update(
       replicas,
       rev,
       [this, &ntp, rev, replicas](ss::lw_shared_ptr<partition> p) {
+          const auto current_cfg = p->group_configuration();
+          // we do not have to request update/cancellation twice
+          if (current_cfg.revision_id() == rev) {
+              return ss::make_ready_future<std::error_code>(
+                errc::waiting_for_recovery);
+          }
+
           const auto raft_cfg_update_finished
-            = are_configuration_replicas_up_to_date(
-              p->group_configuration(), replicas);
+            = current_cfg.type() == raft::configuration_type::simple;
 
           // raft already finished its part, we need to move replica back
           if (raft_cfg_update_finished) {
@@ -1233,21 +1239,28 @@ ss::future<std::error_code> controller_backend::force_abort_replica_set_update(
     if (!partition) {
         co_return errc::partition_not_exists;
     }
+    const auto current_cfg = partition->group_configuration();
 
-    const auto raft_cfg_update_finished = are_configuration_replicas_up_to_date(
-      partition->group_configuration(), replicas);
+    // wait for configuration update, only declare success
+    // when configuration was actually updated
+    auto update_ec = check_configuration_update(
+      _self, partition, replicas, rev);
+
+    if (!update_ec) {
+        co_return errc::success;
+    }
+
+    // we do not have to request update/cancellation twice
+    if (current_cfg.revision_id() == rev) {
+        co_return errc::waiting_for_recovery;
+    }
+
+    const auto raft_cfg_update_finished = current_cfg.type()
+                                          == raft::configuration_type::simple;
+
     if (raft_cfg_update_finished) {
         co_return co_await update_partition_replica_set(ntp, replicas, rev);
     } else {
-        // wait for configuration update, only declare success
-        // when configuration was actually updated
-        auto update_ec = check_configuration_update(
-          _self, partition, replicas, rev);
-
-        if (!update_ec) {
-            co_return errc::success;
-        }
-
         auto ec = co_await partition->force_abort_replica_set_update(rev);
 
         if (ec) {
