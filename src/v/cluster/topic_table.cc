@@ -19,10 +19,25 @@
 #include "model/metadata.h"
 
 #include <seastar/core/coroutine.hh>
+#include <seastar/core/sstring.hh>
 
 #include <optional>
+#include <sstream>
 
 namespace cluster {
+
+ss::sstring print_revisions(
+  const model::ntp& ntp, const topic_table::replicas_revision_map& revisions) {
+    std::stringstream sstream;
+
+    fmt::print(sstream, "{{{}, nodes: {{", ntp);
+    for (const auto& [n, revision] : revisions) {
+        fmt::print(sstream, "{{ n:{}, r: {}}}, ", n, revision);
+    }
+    fmt::print(sstream, "}}");
+
+    return sstream.str();
+}
 
 template<typename Func>
 std::vector<std::invoke_result_t<Func, const topic_table::topic_metadata_item&>>
@@ -63,6 +78,10 @@ topic_table::apply(create_topic_cmd cmd, model::offset offset) {
             md.replica_revisions[pas.id][r.node_id] = model::revision_id(
               offset);
         }
+        vlog(
+          clusterlog.info,
+          "DBG: {}",
+          print_revisions(ntp, md.replica_revisions[pas.id]));
         _pending_deltas.emplace_back(
           std::move(ntp), pas, offset, delta::op_type::add);
     }
@@ -144,6 +163,10 @@ topic_table::apply(create_partition_cmd cmd, model::offset offset) {
             tp->second.replica_revisions[p_as.id][bs.node_id]
               = model::revision_id(offset);
         }
+        vlog(
+          clusterlog.info,
+          "DBG: {}",
+          print_revisions(ntp, tp->second.replica_revisions[p_as.id]));
         _pending_deltas.emplace_back(
           std::move(ntp), std::move(p_as), offset, delta::op_type::add);
     }
@@ -199,6 +222,10 @@ topic_table::apply(move_partition_replicas_cmd cmd, model::offset o) {
     auto previous_assignment = *current_assignment_it;
     // replace partition replica set
     current_assignment_it->replicas = cmd.value;
+    vlog(
+      clusterlog.info,
+      "DBG: before {}",
+      print_revisions(cmd.key, revisions_it->second));
     /**
      * Update partition replica revisions. Assign new revision to added replicas
      * and erase replicas which are removed from replica set
@@ -216,7 +243,10 @@ topic_table::apply(move_partition_replicas_cmd cmd, model::offset o) {
     for (auto& removed : removed_replicas) {
         revisions_it->second.erase(removed.node_id);
     }
-
+    vlog(
+      clusterlog.info,
+      "DBG: after {}",
+      print_revisions(cmd.key, revisions_it->second));
     /// Update all non_replicable topics to have the same 'in-progress' state
     auto found = _topics_hierarchy.find(model::topic_namespace_view(cmd.key));
     if (found != _topics_hierarchy.end()) {
@@ -395,6 +425,10 @@ topic_table::apply(cancel_moving_partition_replicas_cmd cmd, model::offset o) {
       cmd.key);
 
     revisions_it->second = in_progress_it->second.replicas_revisions;
+    vlog(
+      clusterlog.info,
+      "DBG: after cancel {}",
+      print_revisions(cmd.key, revisions_it->second));
 
     /// Update all non_replicable topics to have the same 'in-progress' state
     auto found = _topics_hierarchy.find(model::topic_namespace_view(cmd.key));
