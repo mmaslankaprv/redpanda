@@ -83,7 +83,12 @@ topic_table::apply(create_topic_cmd cmd, model::offset offset) {
           "DBG: {}",
           print_revisions(ntp, md.replica_revisions[pas.id]));
         _pending_deltas.emplace_back(
-          std::move(ntp), pas, offset, delta::op_type::add);
+          std::move(ntp),
+          pas,
+          offset,
+          delta::op_type::add,
+          std::nullopt,
+          md.replica_revisions[pas.id]);
     }
 
     _topics.insert({
@@ -168,7 +173,12 @@ topic_table::apply(create_partition_cmd cmd, model::offset offset) {
           "DBG: {}",
           print_revisions(ntp, tp->second.replica_revisions[p_as.id]));
         _pending_deltas.emplace_back(
-          std::move(ntp), std::move(p_as), offset, delta::op_type::add);
+          std::move(ntp),
+          std::move(p_as),
+          offset,
+          delta::op_type::add,
+          std::nullopt,
+          tp->second.replica_revisions[p_as.id]);
     }
 
     notify_waiters();
@@ -237,12 +247,6 @@ topic_table::apply(move_partition_replicas_cmd cmd, model::offset o) {
         revisions_it->second[r.node_id] = model::revision_id(o);
     }
 
-    auto removed_replicas = subtract_replica_sets_by_node_id(
-      previous_assignment.replicas, current_assignment_it->replicas);
-
-    for (auto& removed : removed_replicas) {
-        revisions_it->second.erase(removed.node_id);
-    }
     vlog(
       clusterlog.info,
       "DBG: after {}",
@@ -291,7 +295,8 @@ topic_table::apply(move_partition_replicas_cmd cmd, model::offset o) {
       *current_assignment_it,
       o,
       delta::op_type::update,
-      std::move(previous_assignment.replicas));
+      std::move(previous_assignment.replicas),
+      revisions_it->second);
 
     notify_waiters();
 
@@ -478,7 +483,8 @@ topic_table::apply(cancel_moving_partition_replicas_cmd cmd, model::offset o) {
       o,
       cmd.value.force ? delta::op_type::force_abort_update
                       : delta::op_type::cancel_update,
-      std::move(replicas));
+      std::move(replicas),
+      revisions_it->second);
 
     notify_waiters();
 
