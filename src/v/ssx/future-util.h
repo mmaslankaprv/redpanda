@@ -21,8 +21,12 @@
 #include <seastar/core/sleep.hh>
 #include <seastar/core/when_all.hh>
 
+#include <fmt/ostream.h>
+
 #include <algorithm>
 #include <iterator>
+#include <string>
+#include <string_view>
 
 namespace ssx {
 
@@ -286,6 +290,18 @@ inline auto spawn_with_gate_then(seastar::gate& g, Func&& func) noexcept {
       .handle_exception_type([](const seastar::broken_semaphore&) {})
       .handle_exception_type([](const seastar::broken_condition_variable&) {});
 }
+template<typename Func>
+inline auto spawn_with_gate_then_log(
+  const std::string& ctx, seastar::gate& g, Func&& func) noexcept {
+    fmt::print("GATE_ENTER: {}\n", ctx);
+    return seastar::try_with_gate(g, std::forward<Func>(func))
+      .handle_exception_type([](const seastar::abort_requested_exception&) {})
+      .handle_exception_type([](const seastar::gate_closed_exception&) {})
+      .handle_exception_type([](const seastar::broken_semaphore&) {})
+      .handle_exception_type([](const seastar::broken_condition_variable&) {})
+      .finally([ctx] { fmt::print("GATE_LEAVE: {}\n", ctx); });
+    ;
+}
 
 /// \brief Detach a fiber holding a gate, with exception handling to ignore
 /// any shutdown exceptions.
@@ -299,6 +315,12 @@ inline auto spawn_with_gate_then(seastar::gate& g, Func&& func) noexcept {
 template<typename Func>
 inline void spawn_with_gate(seastar::gate& g, Func&& func) noexcept {
     background = spawn_with_gate_then(g, std::forward<Func>(func));
+}
+
+template<typename Func>
+inline void spawn_with_gate_log(
+  const std::string& ctx, seastar::gate& g, Func&& func) noexcept {
+    background = spawn_with_gate_then_log(ctx, g, std::forward<Func>(func));
 }
 
 /// \brief Create a future that resolves either when the original future
