@@ -78,8 +78,8 @@ partition_allocator::allocate_partition(
       *_state, p_constraints.replication_factor);
 
     for (auto r = 0; r < p_constraints.replication_factor; ++r) {
-        auto effective_constraits = default_constraints();
-        effective_constraits.hard_constraints.push_back(
+        auto effective_constraints = default_constraints();
+        effective_constraints.hard_constraints.push_back(
           ss::make_lw_shared<hard_constraint_evaluator>(
             distinct_from(replicas.get())));
 
@@ -91,14 +91,14 @@ partition_allocator::allocate_partition(
               current_replicas.end(),
               not_changed_replicas.begin(),
               not_changed_replicas.end());
-            effective_constraits.soft_constraints.push_back(
+            effective_constraints.soft_constraints.push_back(
               ss::make_lw_shared<soft_constraint_evaluator>(
                 distinct_rack(current_replicas, *_state)));
         }
 
-        effective_constraits.add(p_constraints.constraints);
+        effective_constraints.add(p_constraints.constraints);
         auto replica = _allocation_strategy.allocate_replica(
-          effective_constraits, *_state);
+          effective_constraints, *_state);
 
         if (!replica) {
             return replica.error();
