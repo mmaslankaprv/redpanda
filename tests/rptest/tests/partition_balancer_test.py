@@ -230,10 +230,10 @@ class PartitionBalancerTest(EndToEndTest):
 
         def check_rack_placement():
             for p in self.topic_partitions_replicas(self.topic):
-                racks = {(r - 1) // 2 for r in p.replicas}
+                racks = {rack_layout[r - 1] for r in p.replicas}
                 assert (
                     len(racks) == 3
-                ), f"bad rack placement {racks} for partition id: {p.id} (replicas: {p.replicas})"
+                ), f"bad rack placement {racks} for partition: {self.topic.name}/{p.id} (replicas: {p.replicas})"
 
         check_rack_placement()
 
