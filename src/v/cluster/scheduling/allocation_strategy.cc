@@ -22,6 +22,8 @@
 #include "random/generators.h"
 #include "vassert.h"
 
+#include <sstream>
+
 namespace cluster {
 
 inline bool contains_node_already(
@@ -95,7 +97,18 @@ model::node_id find_best_fit(
           [&node = it->second](
             uint32_t score,
             const allocation_constraints::soft_constraint_ev_ptr& ev) {
-              return score + ev->score(*node);
+              auto current = ev->score(*node);
+              std::stringstream sstream;
+
+              vlog(
+                clusterlog.info,
+                "DBG: node: {} constraint: {} score: {}, total_score: {}",
+                node->id(),
+                *ev,
+                current,
+                score + current);
+
+              return score + current;
           });
 
         if (score >= best_score) {
