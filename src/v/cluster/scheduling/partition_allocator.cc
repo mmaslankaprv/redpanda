@@ -64,10 +64,6 @@ result<std::vector<model::broker_shard>>
 partition_allocator::allocate_partition(
   partition_constraints p_constraints,
   const std::vector<model::broker_shard>& not_changed_replicas) {
-    vlog(
-      clusterlog.trace,
-      "allocating partition with constraints: {}",
-      p_constraints);
     if (
       p_constraints.replication_factor <= 0
       || _state->available_nodes() < p_constraints.replication_factor) {
@@ -97,6 +93,12 @@ partition_allocator::allocate_partition(
         }
 
         effective_constraints.add(p_constraints.constraints);
+
+        vlog(
+          clusterlog.trace,
+          "allocating partition with effective constraints: {}",
+          effective_constraints);
+
         auto replica = _allocation_strategy.allocate_replica(
           effective_constraints, *_state);
 
