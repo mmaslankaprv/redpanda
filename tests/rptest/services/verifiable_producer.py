@@ -109,7 +109,7 @@ class VerifiableProducer(BackgroundThreadService):
                  compression_types=None,
                  acks=None,
                  stop_timeout_sec=150,
-                 request_timeout_sec=30,
+                 request_timeout_sec=1,
                  log_level="INFO",
                  enable_idempotence=False,
                  create_time=-1,
@@ -162,7 +162,8 @@ class VerifiableProducer(BackgroundThreadService):
         idx = self.idx(node)
         prop_file = self.render('producer.properties',
                                 request_timeout_ms=(self.request_timeout_sec *
-                                                    1000))
+                                                    1000),
+                                client_id=f"producer-{node.account.hostname}")
         if self.compression_types is not None:
             compression_index = idx - 1
             self.logger.info(
@@ -185,12 +186,12 @@ class VerifiableProducer(BackgroundThreadService):
         # Create and upload config file
         producer_prop_file = self.prop_file(node)
 
+        producer_prop_file += "\ndelivery.timeout.ms=%s\n" % (3000)
         if self.acks is not None:
             self.logger.info(
                 "VerifiableProducer (index = %d) will use acks = %s", idx,
                 self.acks)
             producer_prop_file += "\nacks=%s\n" % self.acks
-
         if self.enable_idempotence:
             self.logger.info("Setting up an idempotent producer")
             producer_prop_file += "\nmax.in.flight.requests.per.connection=5\n"

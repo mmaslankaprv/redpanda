@@ -40,3 +40,22 @@ rp_test(
     kafka
     kafka_protocol
 )
+
+
+rp_test(
+  UNIT_TEST
+  BINARY_NAME
+    packet_test
+  SOURCES
+    tmp_test.cc
+  DEFINITIONS
+    BOOST_TEST_DYN_LINK
+  LIBRARIES
+    v::seastar_testing_main
+    v::kafka
+    v::storage_test_utils
+  ARGS "-- -c 1"
+  LABELS
+    kafka
+    kafka_protocol
+)

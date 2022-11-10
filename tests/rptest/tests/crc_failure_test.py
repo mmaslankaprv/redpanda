@@ -13,9 +13,11 @@ from rptest.clients.types import TopicSpec
 from rptest.tests.end_to_end import EndToEndTest
 from rptest.services.redpanda import RESTART_LOG_ALLOW_LIST, RedpandaService
 
+PRODUCERS = 1
+
 
 class ShutdownTest(EndToEndTest):
-    @cluster(num_nodes=5, log_allow_list=RESTART_LOG_ALLOW_LIST)
+    @cluster(num_nodes=3 + PRODUCERS, log_allow_list=RESTART_LOG_ALLOW_LIST)
     def crc_failure_repro_test(self):
         self.topic = TopicSpec(partition_count=1, replication_factor=3)
         rp_conf = {
@@ -27,6 +29,6 @@ class ShutdownTest(EndToEndTest):
                                         extra_rp_conf=rp_conf)
         self.redpanda.start()
         # Background load generation
-        self.start_producer(2, 200000)
-        time.sleep(3 * 60)
+        self.start_producer(PRODUCERS, 200000)
+        time.sleep(60)
         self.producer.stop()
