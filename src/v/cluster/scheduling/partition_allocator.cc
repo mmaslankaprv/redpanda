@@ -95,8 +95,8 @@ partition_allocator::allocate_partition(
     std::vector<model::broker_shard> all_replicas = not_changed_replicas;
 
     for (auto r = 0; r < replicas_to_allocate; ++r) {
-        auto effective_constraints = default_constraints(domain);
-        effective_constraints.add(p_constraints.constraints);
+        auto effective_constraints = p_constraints.constraints;
+        effective_constraints.add(default_constraints(domain));
 
         auto replica = _allocation_strategy.allocate_replica(
           all_replicas, effective_constraints, *_state, domain);

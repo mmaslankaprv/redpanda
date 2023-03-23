@@ -117,12 +117,23 @@ struct allocation_constraints {
     using soft_constraint_ptr = ss::lw_shared_ptr<soft_constraint>;
     using hard_constraint_ptr = ss::lw_shared_ptr<hard_constraint>;
 
-    std::vector<soft_constraint_ptr> soft_constraints;
+    /**
+     * Hard constraints define a root level of constraints hierarchy
+     */
     std::vector<hard_constraint_ptr> hard_constraints;
+    using constraint_list = std::vector<soft_constraint_ptr>;
+    /**
+     * Each list of a constraints vector contains a level of soft constraints
+     */
+    std::vector<constraint_list> soft_constraints;
 
     void add(soft_constraint c) {
         return soft_constraints.push_back(
-          ss::make_lw_shared<soft_constraint>(std::move(c)));
+          constraint_list{ss::make_lw_shared<soft_constraint>(std::move(c))});
+    }
+
+    void add_level(constraint_list c) {
+        return soft_constraints.push_back(std::move(c));
     }
 
     void add(hard_constraint c) {

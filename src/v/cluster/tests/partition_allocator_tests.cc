@@ -9,8 +9,12 @@
 
 #include "cluster/cluster_utils.h"
 #include "cluster/scheduling/allocation_node.h"
+#include "cluster/scheduling/constraints.h"
+#include "cluster/scheduling/partition_allocator.h"
 #include "cluster/scheduling/types.h"
 #include "cluster/tests/partition_allocator_fixture.h"
+#include "cluster/types.h"
+#include "model/fundamental.h"
 #include "model/metadata.h"
 #include "raft/types.h"
 #include "random/fast_prng.h"
@@ -21,6 +25,8 @@
 
 #include <absl/container/flat_hash_set.h>
 #include <boost/test/tools/old/interface.hpp>
+
+#include <vector>
 
 void validate_replica_set_diversity(
   const std::vector<cluster::partition_assignment> assignments) {
@@ -563,4 +569,207 @@ FIXTURE_TEST(even_distribution_pri_allocation, partition_allocator_fixture) {
             // deallocated
         }
     }
+}
+
+using namespace model;
+using region = named_type<ss::sstring, struct region_tag>;
+struct region_rack {
+    std::optional<region> region;
+    std::optional<rack_id> rack;
+
+    template<typename H>
+    friend H AbslHashValue(H h, const region_rack& rr) {
+        return H::combine(std::move(h), rr.region, rr.rack);
+    }
+
+    friend bool operator==(const region_rack&, const region_rack&) = default;
+};
+
+absl::flat_hash_set<model::node_id>
+replica_set(const std::vector<model::broker_shard>& replicas) {
+    absl::flat_hash_set<model::node_id> r_set;
+
+    for (auto& bs : replicas) {
+        r_set.insert(bs.node_id);
+    }
+    return r_set;
+}
+
+void assert_assignments_equal(
+  const std::vector<model::broker_shard>& lhs,
+  const std::vector<model::broker_shard>& rhs) {
+    absl::flat_hash_set<model::node_id> l_set;
+    absl::flat_hash_set<model::node_id> r_set;
+
+    BOOST_TEST(replica_set(lhs) == replica_set(rhs));
+}
+
+FIXTURE_TEST(hierarchical_assignment_test, partition_allocator_fixture) {
+    // allocate some regular partitions in the cluster but leave space
+
+    absl::flat_hash_map<model::node_id, model::rack_id> racks_mapping;
+
+    racks_mapping.emplace(model::node_id(0), model::rack_id("rack-1"));
+    racks_mapping.emplace(model::node_id(1), model::rack_id("rack-2"));
+    racks_mapping.emplace(model::node_id(2), model::rack_id("rack-3"));
+    racks_mapping.emplace(model::node_id(3), model::rack_id("rack-1"));
+    racks_mapping.emplace(model::node_id(4), model::rack_id("rack-1"));
+    racks_mapping.emplace(model::node_id(5), model::rack_id("rack-2"));
+    racks_mapping.emplace(model::node_id(6), model::rack_id("rack-3"));
+
+    absl::flat_hash_map<model::node_id, region> regions_mapping;
+
+    regions_mapping.emplace(model::node_id(0), region("region-a"));
+    regions_mapping.emplace(model::node_id(1), region("region-a"));
+    regions_mapping.emplace(model::node_id(2), region("region-a"));
+
+    regions_mapping.emplace(model::node_id(3), region("region-c"));
+
+    regions_mapping.emplace(model::node_id(4), region("region-b"));
+    regions_mapping.emplace(model::node_id(5), region("region-b"));
+    regions_mapping.emplace(model::node_id(6), region("region-b"));
+
+    register_node(0, 2, racks_mapping[model::node_id(0)]);
+    register_node(1, 2, racks_mapping[model::node_id(1)]);
+    register_node(2, 2, racks_mapping[model::node_id(2)]);
+    register_node(3, 2, racks_mapping[model::node_id(3)]);
+    register_node(4, 2, racks_mapping[model::node_id(4)]);
+    register_node(5, 2, racks_mapping[model::node_id(5)]);
+    register_node(6, 2, racks_mapping[model::node_id(6)]);
+
+    auto print_assignment = [&](const cluster::allocation_units& units) {
+        for (auto& p_as : units.get_assignments()) {
+            std::stringstream racks;
+            for (auto& bs : p_as.replicas) {
+                fmt::print(
+                  racks,
+                  "{} in {}.{} ",
+                  bs.node_id,
+                  regions_mapping[bs.node_id],
+                  racks_mapping[bs.node_id]);
+            }
+            info("{}", racks.str());
+        }
+    };
+
+    using ret_t = std::optional<region_rack>;
+    auto region_rack_mapper = [&regions_mapping, &racks_mapping](
+                                model::node_id id) -> std::optional<ret_t> {
+        auto rack_it = racks_mapping.find(id);
+        auto region_it = regions_mapping.find(id);
+        std::optional<rack_id> rack;
+        if (rack_it != racks_mapping.end()) {
+            rack = rack_it->second;
+        }
+        std::optional<region> region;
+        if (region_it != regions_mapping.end()) {
+            region = region_it->second;
+        }
+        return region_rack{.region = region, .rack = rack};
+    };
+
+    auto region_mapper =
+      [&regions_mapping](model::node_id id) -> std::optional<region> {
+        auto region_it = regions_mapping.find(id);
+        if (region_it == regions_mapping.end()) {
+            return {};
+        }
+        return region_it->second;
+    };
+
+    cluster::allocation_request request(
+      cluster::partition_allocation_domains::common);
+    cluster::partition_constraints pc{model::partition_id(0), 5};
+
+    pc.constraints.add(cluster::exact_number_or_replicas_in_label(
+      "region", region("region-c"), 1, region_mapper));
+
+    pc.constraints.add(
+      cluster::distinct_labels_preferred("region", region_mapper));
+    pc.constraints.add(
+      cluster::distinct_labels_preferred("region_rack", region_rack_mapper));
+
+    request.partitions.push_back(std::move(pc));
+
+    auto units = allocator.allocate(std::move(request)).get().value();
+
+    print_assignment(*units);
+    /**
+     * This is what balancer will do, will always try to allocate partition
+     * from scratch, no need to specify nodes to remove
+     */
+    cluster::allocation_request reallocation_request(
+      cluster::partition_allocation_domains::common);
+    cluster::partition_constraints new_pc{model::partition_id(0), 5};
+
+    /**
+     * We will add a constraint preferring currently allocated nodes vs the one
+     * which has to be added to the replica set.
+     */
+
+    // same set of constraints
+    new_pc.constraints.add(
+      cluster::distinct_labels_preferred("region", region_mapper));
+    new_pc.constraints.add(
+      cluster::distinct_labels_preferred("region_rack", region_rack_mapper));
+
+    /**
+     * MOST IMPORTANT, prefer current replicas, from the position of this
+     * constraints in the hierarchy it will depend if a move will be executed or
+     * not in case of f.e. region being down
+     */
+    auto current_replica_set = units->get_assignments().begin()->replicas;
+    new_pc.constraints.add(
+      cluster::prefer_current_replicas(current_replica_set));
+
+    reallocation_request.partitions.push_back(std::move(new_pc));
+    // no violations, current and previous assignments should be equal
+    auto new_units = allocator.allocate(std::move(reallocation_request)).get();
+
+    print_assignment(*new_units.value());
+
+    assert_assignments_equal(
+      new_units.value()->get_assignments().front().replicas,
+      units->get_assignments().front().replicas);
+
+    cluster::allocation_request decomm_reallocation_request(
+      cluster::partition_allocation_domains::common);
+    cluster::partition_constraints decomm_pc{model::partition_id(0), 5};
+
+    /**
+     * We will add a constraint preferring currently allocated nodes vs the one
+     * which has to be added to the replica set.
+     */
+
+    // same set of constraints
+    new_pc.constraints.add(
+      cluster::distinct_labels_preferred("region", region_mapper));
+    new_pc.constraints.add(
+      cluster::distinct_labels_preferred("region_rack", region_rack_mapper));
+
+    /**
+     * MOST IMPORTANT, prefer current replicas, from the position of this
+     * constraints in the hierarchy it will depend if a move will be executed or
+     * not in case of f.e. region being down
+     */
+
+    new_pc.constraints.add(
+      cluster::prefer_current_replicas(current_replica_set));
+
+    reallocation_request.partitions.push_back(std::move(new_pc));
+
+    // decommission two nodes, reallocate
+    allocator.decommission_node(model::node_id(0));
+    allocator.decommission_node(model::node_id(1));
+
+    auto after_decommission
+      = allocator.allocate(std::move(reallocation_request)).get();
+
+    auto r_set = replica_set(
+      after_decommission.value()->get_assignments().front().replicas);
+
+    BOOST_REQUIRE(!r_set.contains(model::node_id(0)));
+    BOOST_REQUIRE(!r_set.contains(model::node_id(1)));
+
+    print_assignment(*after_decommission.value());
 }

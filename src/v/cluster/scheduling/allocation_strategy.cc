@@ -79,14 +79,15 @@ std::vector<model::node_id> solve_hard_constraints(
     return possible_nodes;
 }
 
-model::node_id find_best_fit(
-  const std::vector<model::broker_shard>& current_replicas,
-  const std::vector<allocation_constraints::soft_constraint_ptr>& constraints,
+using constraints_level_t
+  = std::vector<allocation_constraints::soft_constraint_ptr>;
+using constraints_hierarchy_t = std::vector<constraints_level_t>;
+
+std::vector<model::node_id> optimize_constraints(
   const std::vector<model::node_id>& possible_nodes,
-  const allocation_state::underlying_t& nodes) {
-    if (possible_nodes.size() == 1) {
-        return possible_nodes.front();
-    }
+  const constraints_level_t& constraints,
+  const std::vector<model::broker_shard>& current_replicas,
+  const allocation_state::underlying_t& allocation_nodes) {
     std::vector<soft_constraint_evaluator> evaluators;
     evaluators.reserve(constraints.size());
     for (auto& c : constraints) {
@@ -97,8 +98,8 @@ model::node_id find_best_fit(
     std::vector<model::node_id> best_fits;
 
     for (const auto& id : possible_nodes) {
-        auto it = nodes.find(id);
-        if (it == nodes.end()) {
+        auto it = allocation_nodes.find(id);
+        if (it == allocation_nodes.end()) {
             continue;
         }
         /**
@@ -132,7 +133,21 @@ model::node_id find_best_fit(
 
     // we break ties randomly, by selecting a random node out of those
     // with the highest score
-    return best_fits.at(random_generators::get_int(best_fits.size() - 1));
+    return best_fits;
+}
+
+model::node_id find_best_fit(
+  const std::vector<model::broker_shard>& current_replicas,
+  const constraints_hierarchy_t& constraints,
+  std::vector<model::node_id> possible_nodes,
+  const allocation_state::underlying_t& allocation_nodes) {
+    std::vector<model::node_id> to_optimize = std::move(possible_nodes);
+    for (const auto& lvl : constraints) {
+        to_optimize = optimize_constraints(
+          to_optimize, lvl, current_replicas, allocation_nodes);
+    }
+
+    return random_generators::random_choice(to_optimize);
 }
 
 allocation_strategy simple_allocation_strategy() {

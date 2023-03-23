@@ -19,6 +19,7 @@
 #include <absl/container/flat_hash_set.h>
 #include <fmt/ostream.h>
 
+#include <algorithm>
 #include <ios>
 #include <sstream>
 
@@ -371,6 +372,38 @@ soft_constraint make_soft_constraint(hard_constraint constraint) {
     };
 
     return soft_constraint(std::make_unique<impl>(std::move(constraint)));
+}
+
+soft_constraint prefer_current_replicas(
+  const std::vector<model::broker_shard>& original_replica_set) {
+    struct impl : soft_constraint::impl {
+        explicit impl(
+          const std::vector<model::broker_shard>& original_replica_set)
+          : _original_replica_set(original_replica_set) {}
+
+        soft_constraint_evaluator
+        make_evaluator(const replicas_t&) const final {
+            return [this](const allocation_node& node) {
+                auto it = std::find_if(
+                  _original_replica_set.begin(),
+                  _original_replica_set.end(),
+                  [&node](const model::broker_shard& current_bs) {
+                      return current_bs.node_id == node.id();
+                  });
+                return it == _original_replica_set.end()
+                         ? 0
+                         : soft_constraint::max_score;
+            };
+        }
+
+        ss::sstring name() const final {
+            return ssx::sformat(
+              "one of current replicas {} preferred", _original_replica_set);
+        }
+        const std::vector<model::broker_shard>& _original_replica_set;
+    };
+
+    return soft_constraint(std::make_unique<impl>(original_replica_set));
 }
 
 } // namespace cluster
