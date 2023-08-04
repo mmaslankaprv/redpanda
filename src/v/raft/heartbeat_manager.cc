@@ -169,6 +169,14 @@ heartbeat_manager::requests_for_range_v2() {
               _enable_lw_heartbeat()
               && !needs_full_heartbeat(
                 follower_metadata, raft_metadata, r->flushed_offset())) {
+                if (follower_metadata.quiescent) {
+                    vlog(
+                      r->_ctxlog.trace,
+                      "[{}] quiescent follower, skipping heartbeat",
+                      id);
+                    continue;
+                }
+
                 vlog(r->_ctxlog.trace, "[{}] lightweight heartbeat", id);
                 r->_probe->lw_heartbeat();
                 it->second.emplace_back(
@@ -266,6 +274,9 @@ heartbeat_manager::send_heartbeats(std::vector<node_heartbeat_v2> reqs) {
           std::vector<ss::future<>> futures;
           futures.reserve(reqs.size());
           for (auto& r : reqs) {
+              if (r.meta_map.empty()) {
+                  continue;
+              }
               futures.push_back(do_heartbeat(std::move(r)));
           }
           return ss::when_all_succeed(futures.begin(), futures.end());
@@ -481,7 +492,7 @@ void heartbeat_manager::process_reply(
             return;
         }
         consensus->update_heartbeat_status(
-          meta_it->second.follower_vnode, true);
+          meta_it->second.follower_vnode, true, in_quiescent_state::yes);
     });
 
     for (auto& m : reply.full_replies()) {

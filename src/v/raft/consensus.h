@@ -33,7 +33,9 @@
 #include "raft/recovery_memory_quota.h"
 #include "raft/replicate_batcher.h"
 #include "raft/timeout_jitter.h"
+#include "raft/types.h"
 #include "seastarx.h"
+#include "ssx/future-util.h"
 #include "ssx/metrics.h"
 #include "ssx/semaphore.h"
 #include "storage/fwd.h"
@@ -335,6 +337,7 @@ public:
             if (_leader_id) {
                 _leader_id = std::nullopt;
                 trigger_leadership_notification();
+                ssx::spawn_with_gate(_bg, [this] { return notify_stepdown(); });
             }
         });
     }
@@ -409,7 +412,8 @@ public:
     void update_suppress_heartbeats(
       vnode, follower_req_seq, heartbeats_suppressed);
 
-    void update_heartbeat_status(vnode, bool);
+    void update_heartbeat_status(
+      vnode, bool, in_quiescent_state = in_quiescent_state::no);
 
     bool should_reconnect_follower(const follower_index_metadata&);
 
@@ -699,6 +703,10 @@ private:
           features::feature::raft_append_entries_serde);
     }
 
+    void enter_quiescent_state();
+    void leave_quiescent_state();
+    ss::future<> notify_stepdown();
+
     // args
     vnode _self;
     raft::group_id _group;
@@ -805,6 +813,7 @@ private:
     offset_monitor _consumable_offset_monitor;
     ss::condition_variable _follower_reply;
     append_entries_buffer _append_requests_buffer;
+    in_quiescent_state _quiescent = in_quiescent_state::no;
     friend std::ostream& operator<<(std::ostream&, const consensus&);
 };
 
