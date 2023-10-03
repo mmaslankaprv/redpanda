@@ -77,7 +77,15 @@ rp_test(
   LABELS raft
 )
 
-v_cc_library(
-    NAME raft_fixture
-    SRCS raft_fixture.cc
-    DEPS Seastar::seastar v::raft v::gtest_main)
+set(srcs
+    config_rewrite_test.cc
+)
+
+rp_test(
+  UNIT_TEST
+  BINARY_NAME test_raft_cw
+  SOURCES ${srcs}
+  LIBRARIES v::seastar_testing_main v::raft v::storage_test_utils v::model_test_utils v::features
+  LABELS raft
+  ARGS "-- -c 8"
+)
