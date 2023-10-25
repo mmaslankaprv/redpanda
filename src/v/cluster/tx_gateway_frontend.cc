@@ -348,7 +348,7 @@ ss::future<> tx_gateway_frontend::stop() {
 }
 
 ss::future<std::optional<model::ntp>>
-tx_gateway_frontend::get_ntp(kafka::transactional_id id) {
+tx_gateway_frontend::ntp_for_tx_id(kafka::transactional_id id) {
     if (!_feature_table.local().is_active(
           features::feature::transaction_partitioning)) {
         co_return model::legacy_tm_ntp;
@@ -905,61 +905,37 @@ ss::future<cluster::init_tm_tx_reply> tx_gateway_frontend::init_tm_tx(
   model::producer_identity expected_pid) {
     auto retries = _metadata_dissemination_retries;
     auto delay_ms = _metadata_dissemination_retry_delay_ms;
-    auto aborted = false;
 
-    auto tx_ntp_opt = co_await get_ntp(tx_id);
-    bool has_metadata = false;
-    if (tx_ntp_opt) {
-        has_metadata = _metadata_cache.local().contains(
-          model::tx_manager_nt, tx_ntp_opt->tp.partition);
-    }
-    while (!aborted && (!tx_ntp_opt || !has_metadata) && 0 < retries--) {
-        vlog(
-          txlog.trace,
-          "waiting for {} to fill metadata cache, retries left: {}",
-          model::tx_manager_nt,
-          retries);
-        aborted = !co_await sleep_abortable(delay_ms, _as);
-        tx_ntp_opt = co_await get_ntp(tx_id);
-        if (tx_ntp_opt) {
-            has_metadata = _metadata_cache.local().contains(
-              model::tx_manager_nt, tx_ntp_opt->tp.partition);
+    /**
+     * If transactional manager metadata is missing, wait for it
+     */
+    if (unlikely(!_metadata_cache.local().contains(model::tx_manager_nt))) {
+        while (!_as.abort_requested() && retries-- > 0) {
+            vlog(
+              txlog.trace,
+              "[tx_id: {}] waiting for {} topic to apper in metadata cache, "
+              "retries left: {}",
+              model::tx_manager_nt,
+              retries);
+            if (_metadata_cache.local().contains(model::tx_manager_nt)) {
+                break;
+            }
+            co_await sleep_abortable(delay_ms, _as);
+        }
+        if (!_metadata_cache.local().contains(model::tx_manager_nt)) {
+            vlog(
+              txlog.warn,
+              "[{}] transaction coordinator topic {} not found in "
+              "metadata_cache",
+              tx_id,
+              model::tx_manager_nt);
+            co_return cluster::init_tm_tx_reply{tx_errc::partition_not_exists};
         }
     }
-    if (!tx_ntp_opt) {
+
+    auto coordinator_ntp = co_await ntp_for_tx_id(tx_id);
+    if (!coordinator_ntp) {
         co_return cluster::init_tm_tx_reply{tx_errc::coordinator_not_available};
-    }
-    if (!has_metadata) {
-        vlog(
-          txlog.warn,
-          "can't find {}/{} in the metadata cache",
-          model::tx_manager_nt,
-          tx_ntp_opt->tp.partition);
-        co_return cluster::init_tm_tx_reply{tx_errc::partition_not_exists};
-    }
-    auto tx_ntp = tx_ntp_opt.value();
-    retries = _metadata_dissemination_retries;
-    aborted = false;
-    auto leader_opt = _leaders.local().get_leader(tx_ntp);
-    while (!aborted && !leader_opt && 0 < retries--) {
-        vlog(
-          txlog.trace,
-          "waiting for {} to fill leaders cache, retries left: {}",
-          tx_ntp,
-          retries);
-        aborted = !co_await sleep_abortable(delay_ms, _as);
-        leader_opt = _leaders.local().get_leader(tx_ntp);
-    }
-    if (!leader_opt) {
-        vlog(txlog.warn, "can't find {} in the leaders cache", tx_ntp);
-        co_return cluster::init_tm_tx_reply{tx_errc::leader_not_found};
-    }
-
-    auto leader = leader_opt.value();
-    auto _self = _controller->self();
-
-    if (leader != _self) {
-        co_return cluster::init_tm_tx_reply{tx_errc::not_coordinator};
     }
 
     co_return co_await init_tm_tx_locally(
@@ -967,7 +943,7 @@ ss::future<cluster::init_tm_tx_reply> tx_gateway_frontend::init_tm_tx(
       transaction_timeout_ms,
       timeout,
       expected_pid,
-      tx_ntp.tp.partition);
+      coordinator_ntp->tp.partition);
 }
 
 ss::future<cluster::init_tm_tx_reply> tx_gateway_frontend::init_tm_tx_locally(
@@ -1350,7 +1326,7 @@ ss::future<cluster::init_tm_tx_reply> tx_gateway_frontend::do_init_tm_tx(
 
 ss::future<add_paritions_tx_reply> tx_gateway_frontend::add_partition_to_tx(
   add_paritions_tx_request request, model::timeout_clock::duration timeout) {
-    auto tx_ntp_opt = co_await get_ntp(request.transactional_id);
+    auto tx_ntp_opt = co_await ntp_for_tx_id(request.transactional_id);
     if (!tx_ntp_opt) {
         co_return make_add_partitions_error_response(
           request, tx_errc::coordinator_not_available);
@@ -1572,7 +1548,7 @@ ss::future<add_paritions_tx_reply> tx_gateway_frontend::do_add_partition_to_tx(
 
 ss::future<add_offsets_tx_reply> tx_gateway_frontend::add_offsets_to_tx(
   add_offsets_tx_request request, model::timeout_clock::duration timeout) {
-    auto tx_ntp_opt = co_await get_ntp(request.transactional_id);
+    auto tx_ntp_opt = co_await ntp_for_tx_id(request.transactional_id);
     if (!tx_ntp_opt) {
         co_return add_offsets_tx_reply{
           .error_code = tx_errc::coordinator_not_available};
@@ -1680,7 +1656,7 @@ ss::future<add_offsets_tx_reply> tx_gateway_frontend::do_add_offsets_to_tx(
 
 ss::future<end_tx_reply> tx_gateway_frontend::end_txn(
   end_tx_request request, model::timeout_clock::duration timeout) {
-    auto tx_ntp_opt = co_await get_ntp(request.transactional_id);
+    auto tx_ntp_opt = co_await ntp_for_tx_id(request.transactional_id);
     if (!tx_ntp_opt) {
         co_return end_tx_reply{
           .error_code = tx_errc::coordinator_not_available};
@@ -3171,7 +3147,7 @@ tx_gateway_frontend::get_all_transactions() {
 
 ss::future<result<tm_transaction, tx_errc>>
 tx_gateway_frontend::describe_tx(kafka::transactional_id tid) {
-    auto tm_ntp_opt = co_await get_ntp(tid);
+    auto tm_ntp_opt = co_await ntp_for_tx_id(tid);
     if (!tm_ntp_opt) {
         co_return tx_errc::coordinator_not_available;
     }
@@ -3263,7 +3239,7 @@ tx_gateway_frontend::route_locally(try_abort_request&& r) {
 
 ss::future<tx_errc> tx_gateway_frontend::delete_partition_from_tx(
   kafka::transactional_id tid, tm_transaction::tx_partition ntp) {
-    auto tm_ntp = co_await get_ntp(tid);
+    auto tm_ntp = co_await ntp_for_tx_id(tid);
     if (!tm_ntp) {
         co_return tx_errc::coordinator_not_available;
     }
