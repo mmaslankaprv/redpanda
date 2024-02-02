@@ -11,6 +11,7 @@
 #include "model/metadata.h"
 #include "model/record.h"
 #include "model/record_batch_reader.h"
+#include "raft/errc.h"
 #include "raft/tests/raft_fixture.h"
 #include "raft/tests/raft_group_fixture.h"
 #include "raft/types.h"
@@ -18,6 +19,12 @@
 #include "storage/record_batch_builder.h"
 #include "test_utils/async.h"
 #include "test_utils/test.h"
+
+#include <seastar/core/loop.hh>
+#include <seastar/core/shared_ptr.hh>
+#include <seastar/core/sleep.hh>
+
+#include <fmt/core.h>
 
 #include <algorithm>
 
@@ -171,4 +178,83 @@ TEST_F_CORO(
     co_await parallel_for_each_node(
       [](auto& n) { return n.raft()->maybe_flush_log(0); });
     co_await wait_for_committed_offset(result.value().last_offset, 10s);
+}
+
+TEST_F_CORO(raft_fixture, validate_relaxed_consistency) {
+    co_await create_simple_group(3);
+    // wait for leader
+    co_await wait_for_leader(10s);
+
+    bool stop = false;
+
+    auto produce_fiber = ss::do_until(
+      [&stop] { return stop; },
+      [this] {
+          ss::lw_shared_ptr<consensus> raft;
+          for (auto& n : nodes()) {
+              if (n.second->raft()->is_leader()) {
+                  raft = n.second->raft();
+                  break;
+              }
+          }
+
+          if (!raft) {
+              return ss::sleep(100ms);
+          }
+          return raft
+            ->replicate(
+              make_batches(10, 10, 128),
+              replicate_options(consistency_level::leader_ack))
+            .then([](result<replicate_result> result) {
+                if (result.has_error()) {
+                    // fmt::print(
+                    //   "error(replicating): {}\n", result.error().message());
+                }
+            });
+      });
+    int transfers = 10;
+    auto l_transfer_fiber = ss::do_until(
+      [&transfers, &stop] { return transfers-- <= 0 || stop; },
+      [this] {
+          ss::lw_shared_ptr<consensus> raft;
+          for (auto& n : nodes()) {
+              if (n.second->raft()->is_leader()) {
+                  raft = n.second->raft();
+                  break;
+              }
+          }
+
+          if (!raft) {
+              return ss::sleep(100ms);
+          }
+
+          return raft
+            ->transfer_leadership(
+              transfer_leadership_request{.group = raft->group()})
+            .then([](transfer_leadership_reply r) {
+                if (r.result != raft::errc::success) {
+                    fmt::print("error(transfering): {}\n", r);
+                }
+            })
+            .then([] { return ss::sleep(200ms); });
+      });
+
+    co_await ss::sleep(30s);
+    stop = true;
+    co_await std::move(produce_fiber);
+    co_await std::move(l_transfer_fiber);
+
+    for (auto& n : nodes()) {
+        auto r = n.second->raft();
+        fmt::print(
+          "leader: {} log_end: {}, visible: {} \n",
+          r->is_leader(),
+          r->dirty_offset(),
+          r->last_visible_index());
+        if (r->is_leader()) {
+            for (auto& fs : r->get_follower_stats()) {
+                fmt::print("f: {}\n", fs.second);
+            }
+        }
+    }
 }
