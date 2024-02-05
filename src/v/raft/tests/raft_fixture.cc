@@ -32,6 +32,7 @@
 #include "raft/timeout_jitter.h"
 #include "raft/types.h"
 #include "random/generators.h"
+#include "rpc/types.h"
 #include "serde/serde.h"
 #include "ssx/future-util.h"
 #include "storage/api.h"
@@ -131,8 +132,18 @@ ss::future<> channel::dispatch_loop() {
             case msg_type::append_entries: {
                 auto req = co_await serde::read_async<append_entries_request>(
                   req_parser);
+                fmt::print(
+                  "AR: source: {}, target: {}, prev_log_index: {}\n",
+                  req.source_node(),
+                  req.target_node(),
+                  req.metadata().prev_log_index);
                 auto resp = co_await raft()->append_entries(std::move(req));
                 iobuf resp_buf;
+                fmt::print(
+                  "RESPAR: source: {}, target: {} prev_log_index: {}\n",
+                  resp.node_id,
+                  resp.target_node_id,
+                  resp.last_dirty_log_index);
                 co_await serde::write_async(resp_buf, std::move(resp));
                 msg.resp_data.set_value(std::move(resp_buf));
                 break;
@@ -272,8 +283,8 @@ static constexpr msg_type map_msg_type() {
 }
 
 template<typename ReqT, typename RespT>
-ss::future<result<RespT>>
-in_memory_test_protocol::dispatch(model::node_id id, ReqT req) {
+ss::future<result<RespT>> in_memory_test_protocol::dispatch(
+  model::node_id id, ReqT req, rpc::client_opts opts) {
     _gate.hold();
     auto it = _channels.find(id);
     if (it == _channels.end()) {
@@ -303,8 +314,11 @@ in_memory_test_protocol::dispatch(model::node_id id, ReqT req) {
     }
 
     try {
-        auto resp = co_await node_channel.exchange(msg_type, std::move(buffer));
-        iobuf_parser parser(std::move(resp));
+        auto resp_f = node_channel.exchange(msg_type, std::move(buffer));
+        if (opts.resource_units) {
+            opts.resource_units.reset();
+        }
+        iobuf_parser parser(co_await std::move(resp_f));
         co_return co_await serde::read_async<RespT>(parser);
     } catch (const seastar::gate_closed_exception&) {
         co_return errc::shutting_down;
@@ -312,45 +326,50 @@ in_memory_test_protocol::dispatch(model::node_id id, ReqT req) {
 }
 
 ss::future<result<vote_reply>> in_memory_test_protocol::vote(
-  model::node_id id, vote_request&& req, rpc::client_opts) {
-    return dispatch<vote_request, vote_reply>(id, req);
+  model::node_id id, vote_request&& req, rpc::client_opts opts) {
+    return dispatch<vote_request, vote_reply>(id, req, std::move(opts));
 };
 
 ss::future<result<append_entries_reply>>
 in_memory_test_protocol::append_entries(
-  model::node_id id, append_entries_request&& req, rpc::client_opts, bool) {
+  model::node_id id,
+  append_entries_request&& req,
+  rpc::client_opts opts,
+  bool) {
     return dispatch<append_entries_request, append_entries_reply>(
-      id, std::move(req));
+      id, std::move(req), std::move(opts));
 };
 
 ss::future<result<heartbeat_reply>> in_memory_test_protocol::heartbeat(
-  model::node_id id, heartbeat_request&& req, rpc::client_opts) {
-    return dispatch<heartbeat_request, heartbeat_reply>(id, std::move(req));
+  model::node_id id, heartbeat_request&& req, rpc::client_opts opts) {
+    return dispatch<heartbeat_request, heartbeat_reply>(
+      id, std::move(req), std::move(opts));
 }
 
 ss::future<result<heartbeat_reply_v2>> in_memory_test_protocol::heartbeat_v2(
-  model::node_id id, heartbeat_request_v2&& req, rpc::client_opts) {
+  model::node_id id, heartbeat_request_v2&& req, rpc::client_opts opts) {
     return dispatch<heartbeat_request_v2, heartbeat_reply_v2>(
-      id, std::move(req));
+      id, std::move(req), std::move(opts));
 }
 
 ss::future<result<install_snapshot_reply>>
 in_memory_test_protocol::install_snapshot(
-  model::node_id id, install_snapshot_request&& req, rpc::client_opts) {
+  model::node_id id, install_snapshot_request&& req, rpc::client_opts opts) {
     return dispatch<install_snapshot_request, install_snapshot_reply>(
-      id, std::move(req));
+      id, std::move(req), std::move(opts));
 }
 
 ss::future<result<timeout_now_reply>> in_memory_test_protocol::timeout_now(
-  model::node_id id, timeout_now_request&& req, rpc::client_opts) {
-    return dispatch<timeout_now_request, timeout_now_reply>(id, std::move(req));
+  model::node_id id, timeout_now_request&& req, rpc::client_opts opts) {
+    return dispatch<timeout_now_request, timeout_now_reply>(
+      id, std::move(req), std::move(opts));
 }
 
 ss::future<result<transfer_leadership_reply>>
 in_memory_test_protocol::transfer_leadership(
-  model::node_id id, transfer_leadership_request&& req, rpc::client_opts) {
+  model::node_id id, transfer_leadership_request&& req, rpc::client_opts opts) {
     return dispatch<transfer_leadership_request, transfer_leadership_reply>(
-      id, std::move(req));
+      id, std::move(req), std::move(opts));
 }
 
 raft_node_instance::raft_node_instance(

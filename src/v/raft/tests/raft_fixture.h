@@ -135,7 +135,8 @@ public:
 
 private:
     template<typename ReqT, typename RespT>
-    ss::future<result<RespT>> dispatch(model::node_id, ReqT req);
+    ss::future<result<RespT>>
+    dispatch(model::node_id, ReqT req, rpc::client_opts opts);
     ss::gate _gate;
     absl::flat_hash_map<model::node_id, std::unique_ptr<channel>> _channels;
     std::vector<ss::noncopyable_function<ss::future<>(msg_type)>>
