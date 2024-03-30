@@ -1,0 +1,20 @@
+diff --git a/src/v/storage/tests/CMakeLists.txt b/src/v/storage/tests/CMakeLists.txt
+index 656c2ef9d0..69d9194f99 100644
+--- a/src/v/storage/tests/CMakeLists.txt
++++ b/src/v/storage/tests/CMakeLists.txt
+@@ -41,6 +41,15 @@ rp_test(
+   ARGS "-- -c 1"
+ )
+ 
++rp_test(
++  UNIT_TEST
++  BINARY_NAME kv_override
++  SOURCES
++      kvstore_override.cc
++  LIBRARIES v::seastar_testing_main v::storage_test_utils v::model_test_utils
++  LABELS storage
++  ARGS "-- -c 1"
++)
+ 
+ rp_test(
+         UNIT_TEST
