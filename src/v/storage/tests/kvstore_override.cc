@@ -1,46 +1,65 @@
 #include "cluster/types.h"
-#include "model/record.h"
-#include "model/timestamp.h"
-#include "storage/disk_log_impl.h"
-#include "storage/log.h"
+#include "config/property.h"
+#include "features/feature_table.h"
+#include "model/fundamental.h"
+#include "storage/api.h"
+#include "storage/kvstore.h"
 #include "storage/log_manager.h"
-#include "storage/segment.h"
-#include "storage/tests/storage_test_fixture.h"
-#include "storage/tests/utils/disk_log_builder.h"
-#include "storage/types.h"
-#include "test_utils/fixture.h"
+#include "test_utils/test.h"
 
-FIXTURE_TEST(kv_override, storage_test_fixture) {
-    auto cfg = default_log_config("/home/mmaslanka/dev/support/sharechat/data");
-    cfg.cache = storage::with_cache::no;
-    storage::ntp_config::default_overrides overrides;
-    ss::abort_source as;
-    storage::log_manager mgr = make_log_manager(cfg);
+#include <seastar/core/sstring.hh>
+#include <seastar/util/file.hh>
+
+#include <cstdint>
+#include <optional>
+#include <string_view>
+
+using namespace std::chrono_literals;
+
+std::string_view dir = "/home/mmaslanka/dev/support/data_override";
+storage::kvstore_config kv_cfg() {
+    return {10_MiB, config::mock_binding(10ms), ss::sstring(dir), std::nullopt};
+}
+
+storage::log_config log_mgr_cfg() { return {ss::sstring(dir), 1_MiB}; }
+
+TEST_CORO(kv_override, override_configuration) {
+    try {
+        co_await ss::recursive_remove_directory(
+          std::filesystem::path(dir) / "redpanda");
+        co_await ss::recursive_remove_directory(
+          std::filesystem::path(dir) / "kafka");
+    } catch (...) {
+    }
+    ss::sharded<features::feature_table> ft;
+
+    co_await ft.start();
+    storage::api storage(&kv_cfg, &log_mgr_cfg, ft);
+    co_await storage.start();
+    auto& kvstore = storage.kvs();
     static const bytes node_uuid_key = "node_uuid";
 
     const bytes invariants_key{"configuration_invariants"};
+
+    // OVERRIDES HERE
     model::node_uuid node_uuid(
-      uuid_t::from_string("307a43da-f710-457c-ac55-bdc7f1f67af8"));
+      uuid_t::from_string("755ea266-044a-4609-974d-3fc55864c44c"));
+    model::node_id node_id{0};
+    uint16_t cores = 1;
 
-    // INFO  2023-06-16 03:56:46,097 [shard 0] cluster - members_manager.cc:329
-    // - Node UUID {8e9752a6-9795-4b08-9084-4fbd6f5d34c1} has node ID {3}
-    kvstore
-      .put(
-        storage::kvstore::key_space::controller,
-        node_uuid_key,
-        serde::to_iobuf(node_uuid))
-      .get();
+    co_await kvstore.put(
+      storage::kvstore::key_space::controller,
+      node_uuid_key,
+      serde::to_iobuf(node_uuid));
 
-    cluster::configuration_invariants invariants(model::node_id(11), 4);
+    auto invariants_buffer = reflection::to_iobuf(
+      cluster::configuration_invariants(node_id, cores));
 
-    auto invariants_buffer = reflection::to_iobuf(std::move(invariants));
+    co_await kvstore.put(
+      storage::kvstore::key_space::controller,
+      invariants_key,
+      std::move(invariants_buffer));
 
-    kvstore
-      .put(
-        storage::kvstore::key_space::controller,
-        invariants_key,
-        std::move(invariants_buffer))
-      .get();
-
-    mgr.stop().get();
+    co_await storage.stop();
+    co_await ft.stop();
 }

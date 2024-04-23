@@ -44,10 +44,11 @@ rp_test(
 
 rp_test(
   UNIT_TEST
+  GTEST
   BINARY_NAME kv_override
   SOURCES
       kvstore_override.cc
-  LIBRARIES v::seastar_testing_main v::storage_test_utils v::model_test_utils
+  LIBRARIES v::storage v::cluster v::gtest_main
   LABELS storage
   ARGS "-- -c 1"
 )
