@@ -19,6 +19,12 @@ build --noincompatible_sandbox_hermetic_tmp
 common --registry=https://bcr.bazel.build
 
 # =================================
+# libc++
+# =================================
+build:libc++ --cxxopt=-stdlib=libc++
+build:libc++ --linkopt -lc++
+
+# =================================
 # Sanitizer
 # =================================
 build:sanitizer --copt -fsanitize=address,undefined,vptr,function
@@ -27,6 +33,8 @@ build:sanitizer --linkopt --rtlib=compiler-rt
 build:sanitizer --linkopt -fsanitize-link-c++-runtime
 build:sanitizer --copt -O1
 
+build:sanitizer-libc++ --config=sanitizer
+build:sanitizer-libc++ --config=libc++
 # =================================
 # Security
 # =================================
