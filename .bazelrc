@@ -1,6 +1,7 @@
 # use a compiler name that doesn't symlink to ccache
 build --action_env=CC=clang-16 --host_action_env=CC=clang-16
 build --action_env=CXX=clang++-16 --host_action_env=CXX=clang++-16
+build --action_env=CXXLINK=lld --host_action_env=CXXLINK=lld
 build --action_env=BAZEL_COMPILER=clang
 build --cxxopt=-std=c++20 --host_cxxopt=-std=c++20
 build --linkopt -fuse-ld=lld
