@@ -25,6 +25,8 @@ common --registry=https://bcr.bazel.build
 build:libc++ --cxxopt=-stdlib=libc++
 build:libc++ --linkopt -lc++
 
+build:llvm --config=libc++
+
 # =================================
 # Sanitizer
 # =================================
@@ -36,6 +38,8 @@ build:sanitizer --copt -O1
 
 build:sanitizer-libc++ --config=sanitizer
 build:sanitizer-libc++ --config=libc++
+
+build:sanitizer-llvm --config=sanitizer-libc++
 # =================================
 # Security
 # =================================
@@ -74,3 +78,5 @@ build:release --copt -mllvm
 build:release --copt -inline-threshold=2500
 
 try-import %workspace%/user.bazelrc
+# import overrides for custom llvm installation
+try-import %workspace%/llvm.bazelrc
