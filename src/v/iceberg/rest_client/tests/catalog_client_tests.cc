@@ -19,6 +19,7 @@
 namespace r = iceberg::rest_client;
 namespace t = ::testing;
 namespace bh = boost::beast::http;
+namespace i = iceberg;
 
 using namespace std::chrono_literals;
 
@@ -281,4 +282,178 @@ TEST(token_tests, handle_retries_exhausted) {
       t::VariantWith<r::retries_exhausted>(t::Field(
         &r::retries_exhausted::errors,
         t::Each(t::VariantWith<bh::status>(bh::status::gateway_timeout)))));
+}
+
+ss::future<http::downloaded_response> validate_load_table_request(
+  bh::request_header<>&& r, std::optional<iobuf> payload) {
+    EXPECT_EQ(r.target(), "/v1/namespaces/n1%1Fn2/tables/t");
+    EXPECT_EQ(r.method_string(), "GET");
+
+    EXPECT_FALSE(payload.has_value());
+
+    const auto metadata =
+      R"J({"metadata":{
+    "format-version": 2,
+    "table-uuid": "9c12d441-03fe-4693-9a96-a0705ddf69c1",
+    "location": "s3://foo/bar/baz",
+    "last-sequence-number": 34,
+    "last-updated-ms": 1602638573590,
+    "last-column-id": 3,
+    "current-schema-id": 1,
+    "schemas":[{"type":"struct","schema-id":0,"fields":[{"id":1,"name":"x","required":true,"type":"long"}]}],
+    "default-spec-id": 0,
+    "partition-specs": [{"spec-id":0,"fields":[{"name":"x","transform":"identity","source-id":1,"field-id":1000}]}],
+    "last-partition-id": 1000,
+    "default-sort-order-id": 3,
+    "sort-orders":[{"order-id":3,"fields":[{"transform":"identity","source-ids":[2],"direction":"asc","null-order":"nulls-first"}]}],
+    "properties":{"read.split.target.size":"134217728"},
+    "current-snapshot-id": 3055729675574597004}})J";
+
+    co_return http::downloaded_response{
+      .status = boost::beast::http::status::ok, .body = iobuf::from(metadata)};
+}
+
+ss::future<http::downloaded_response> validate_create_table_request(
+  bh::request_header<>&& r, std::optional<iobuf> payload) {
+    EXPECT_EQ(r.target(), "/v1/namespaces/n1%1Fn2/tables");
+    EXPECT_EQ(r.method_string(), "POST");
+    EXPECT_THAT(r[bh::field::content_type], "application/json");
+
+    EXPECT_TRUE(payload.has_value());
+
+    const auto metadata =
+      R"J({"metadata":{
+    "format-version": 2,
+    "table-uuid": "9c12d441-03fe-4693-9a96-a0705ddf69c1",
+    "location": "loc",
+    "last-sequence-number": 1,
+    "last-updated-ms": 1,
+    "last-column-id": 2,
+    "current-schema-id": 1,
+    "schemas":[{"type":"struct","schema-id":1,"fields":[{"id":1,"name":"name","required":true,"type":"string"},{"id":2,"name":"age","required":true,"type":"int"}]}],
+    "default-spec-id": 1,
+    "partition-specs": [{"spec-id":1,"fields":[{"source-id":2,"field-id":1000,"name":"age","transform":"identity"}]}],
+    "last-partition-id": 1000,
+    "default-sort-order-id": 3,
+    "sort-orders":[{"order-id":3,"fields":[{"transform":"identity","source-ids":[2],"direction":"asc","null-order":"nulls-first"}]}],
+    "properties":{"read.split.target.size":"134217728"},
+    "current-snapshot-id": 2}})J";
+
+    co_return http::downloaded_response{
+      .status = boost::beast::http::status::ok, .body = iobuf::from(metadata)};
+}
+
+ss::future<http::downloaded_response> validate_request(
+  bh::request_header<>&& r,
+  std::optional<iobuf> payload,
+  ss::lowres_clock::duration timeout) {
+    if (r.target().ends_with("/oauth/tokens")) {
+        co_return co_await validate_token_request(
+          std::move(r), std::move(payload), timeout);
+    }
+
+    if (r.target().ends_with("/tables") && r.method_string() == "POST") {
+        co_return co_await validate_create_table_request(
+          std::move(r), std::move(payload));
+    }
+
+    if (r.target().ends_with(fmt::format("/tables/{}", exists.table))) {
+        co_return co_await validate_load_table_request(
+          std::move(r), std::move(payload));
+    }
+
+    if (r.target().ends_with(fmt::format("/tables/{}", missing.table))) {
+        co_return http::downloaded_response{
+          .status = boost::beast::http::status::not_found, .body = iobuf()};
+    }
+
+    co_return http::downloaded_response{
+      .status = boost::beast::http::status::bad_request, .body = iobuf()};
+}
+
+TEST(catalog_ops, load_table) {
+    client_source cs{[](mock_client& m) {
+        EXPECT_CALL(m, request_and_collect_response(t::_, t::_, t::_))
+          .WillOnce(validate_request);
+    }};
+
+    ss::abort_source as;
+    r::catalog_client cc{cs, endpoint, credentials, as};
+    r::catalog_client_tester t{cc};
+
+    auto tmeta = cc.load_table(exists).get();
+    EXPECT_FALSE(tmeta.has_error());
+    EXPECT_FALSE(tmeta.has_exception());
+    EXPECT_EQ(
+      ss::sstring{tmeta.value().table_uuid},
+      ss::sstring{"9c12d441-03fe-4693-9a96-a0705ddf69c1"});
+}
+
+TEST(catalog_ops, load_table_missing) {
+    client_source cs{[](mock_client& m) {
+        EXPECT_CALL(m, request_and_collect_response(t::_, t::_, t::_))
+          .WillOnce(validate_request);
+    }};
+
+    ss::abort_source as;
+    r::catalog_client cc{cs, endpoint, credentials, as};
+    r::catalog_client_tester t{cc};
+
+    auto tmeta = cc.load_table(missing).get();
+    EXPECT_TRUE(tmeta.has_error());
+    EXPECT_FALSE(tmeta.has_exception());
+    EXPECT_EQ(tmeta.error(), i::catalog::errc::not_found);
+}
+
+TEST(catalog_ops, create_table) {
+    client_source cs{[](mock_client& m) {
+        EXPECT_CALL(m, request_and_collect_response(t::_, t::_, t::_))
+          .WillOnce(validate_request);
+    }};
+
+    ss::abort_source as;
+    r::catalog_client cc{cs, endpoint, credentials, as};
+    r::catalog_client_tester t{cc};
+
+    i::struct_type nested;
+    nested.fields.emplace_back(i::nested_field::create(
+      1, "name", i::field_required::yes, i::string_type{}));
+    nested.fields.emplace_back(
+      i::nested_field::create(2, "age", i::field_required::yes, i::int_type{}));
+    auto tmeta = cc.create_table(
+                     missing,
+                     i::schema{
+                       .schema_struct = nested.copy(),
+                       .schema_id = i::schema::id_t{1},
+                     },
+                     i::partition_spec{
+                       .spec_id = i::partition_spec::id_t{1},
+                       .fields = {i::partition_field{
+                         .source_id = i::nested_field::id_t{2},
+                         .field_id = i::partition_field::id_t{1000},
+                         .name = "age",
+                         .transform = i::identity_transform{}}}})
+                   .get();
+    EXPECT_FALSE(tmeta.has_error());
+    EXPECT_FALSE(tmeta.has_exception());
+    EXPECT_EQ(
+      ss::sstring{tmeta.value().table_uuid},
+      ss::sstring{"9c12d441-03fe-4693-9a96-a0705ddf69c1"});
+}
+
+TEST(catalog_ops, create_table_when_exists) {
+    client_source cs{[](mock_client& m) {
+        EXPECT_CALL(m, request_and_collect_response(t::_, t::_, t::_))
+          .WillOnce(validate_request);
+    }};
+
+    ss::abort_source as;
+    r::catalog_client cc{cs, endpoint, credentials, as};
+    r::catalog_client_tester t{cc};
+
+    auto tmeta
+      = cc.create_table(exists, i::schema{}, i::partition_spec{}).get();
+    EXPECT_TRUE(tmeta.has_error());
+    EXPECT_FALSE(tmeta.has_exception());
+    EXPECT_EQ(tmeta.error(), i::catalog::errc::already_exists);
 }

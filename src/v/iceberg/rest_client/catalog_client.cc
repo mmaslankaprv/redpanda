@@ -69,6 +69,60 @@ catalog_client::catalog_client(
       retry_policy ? std::move(retry_policy)
                    : std::make_unique<default_retry_policy>()} {}
 
+// ss::future<checked<table_metadata, catalog::errc>>
+// catalog_client::create_table(
+//   const table_identifier& table_ident,
+//   const schema& schema,
+//   const partition_spec& spec) {
+//     retry_chain_node rtc{_as, 60s, 1s};
+//     auto token = co_await ensure_token(rtc);
+//     if (!token.has_value()) {
+//         co_return map_error(token.error(), "create_table");
+//     }
+//     if (auto does_table_exist = co_await load_table(table_ident);
+//         does_table_exist.has_error()
+//         && does_table_exist.error() == catalog::errc::not_found) {
+//         create_table_request ctr_payload{
+//           .name = table_ident.table,
+//           .schema = schema.copy(),
+//           .partition_spec = spec.copy()};
+//         auto http_request = table{_path_components.root_path(),
+//         table_ident.ns}
+//                               .create()
+//                               .with_bearer_auth(token.value())
+//                               .with_content_type("application/json");
+//         co_return unwrap(
+//           (co_await perform_request(
+//              rtc, http_request, iobuf::from(to_json_str(ctr_payload))))
+//             .and_then(parse_json)
+//             .and_then(parse_table_metadata),
+//           "create_table");
+//     }
+//     co_return catalog::errc::already_exists;
+// }
+
+// ss::future<checked<table_metadata, catalog::errc>>
+// catalog_client::load_table(const table_identifier& ident) {
+//     retry_chain_node rtc{_as, 60s, 1s};
+//     auto token = co_await ensure_token(rtc);
+//     if (!token.has_value()) {
+//         co_return map_error(token.error(), "load_table");
+//     }
+//     auto http_request = table{_path_components.root_path(), ident.ns}
+//                           .get(ident.table)
+//                           .with_bearer_auth(token.value());
+//     co_return unwrap(
+//       (co_await perform_request(rtc, http_request))
+//         .and_then(parse_json)
+//         .and_then(parse_table_metadata),
+//       "load_table");
+// }
+
+// ss::future<checked<std::nullopt_t, catalog::errc>>
+// catalog_client::commit_txn(const table_identifier&, transaction) {
+//     co_return catalog::errc::unexpected_state;
+// }
+
 ss::future<expected<oauth_token>>
 catalog_client::acquire_token(retry_chain_node& rtc) {
     const auto token_request

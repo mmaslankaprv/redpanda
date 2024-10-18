@@ -13,70 +13,39 @@
 #include "iceberg/logger.h"
 
 namespace iceberg::rest_client {
-using errc = enum iceberg::catalog::errc;
-using enum errc;
 
-using http_status = enum boost::beast::http::status;
+namespace {
+struct domain_error_printing_visitor {
+    std::ostream* os;
 
-errc domain_error_mapper::operator()(http_status status) const {
-    if (status == http_status::not_found) {
-        return not_found;
+    void operator()(const http::url_build_error& err) const {
+        fmt::print(*os, "url_build_error: {}", err);
     }
 
-    if (status == http_status::conflict) {
-        return already_exists;
+    void operator()(const json_parse_error& err) const {
+        fmt::print(
+          *os,
+          "json_parse_error: context: {}, error: {}",
+          err.context,
+          err.error);
     }
-    return unexpected_state;
-}
 
-errc domain_error_mapper::operator()(http_call_error err) const {
-    return std::visit(domain_error_mapper{}, err);
-}
+    void operator()(const http_call_error& err) const {
+        std::visit(
+          [this](const auto& http_call_error) {
+              fmt::print(*os, "http_call_error: {}", http_call_error);
+          },
+          err);
+    }
 
-errc domain_error_mapper::operator()(ss::sstring) const {
-    return unexpected_state;
-}
-
-errc domain_error_mapper::operator()(json_parse_error) const {
-    return unexpected_state;
-}
-
-errc domain_error_mapper::operator()(retries_exhausted) const {
-    return timedout;
-}
-
-errc domain_error_mapper::operator()(http::url_build_error) const {
-    return unexpected_state;
-}
-
-// Translates domain error to more general catalog::errc.
-errc map_error(const domain_error& error, std::string_view context) {
-    vlog(log.error, "{}: {}", context, error);
-    return std::visit(domain_error_mapper{}, error);
-}
-
-std::ostream&
-domain_error_printer::operator()(http::url_build_error err) const {
-    return os << err;
-}
-
-std::ostream& domain_error_printer::operator()(json_parse_error err) const {
-    return os << "json_parse_error{{context:" << err.context
-              << ",error:" << err.error << "}}";
-}
-
-std::ostream& domain_error_printer::operator()(http_call_error err) const {
-    std::visit([this](auto error) { os << error; }, err);
-    return os;
-}
-
-std::ostream& domain_error_printer::operator()(retries_exhausted err) const {
-    return os << fmt::format(
-             "retries_exhausted:[{}]", fmt::join(err.errors, ","));
-}
+    void operator()(const retries_exhausted& err) const {
+        fmt::print(*os, "retries_exhausted:[{}]", fmt::join(err.errors, ", "));
+    }
+};
+} // namespace
 
 std::ostream& operator<<(std::ostream& os, domain_error err) {
-    std::visit(domain_error_printer{.os = os}, err);
+    std::visit(domain_error_printing_visitor{.os = &os}, err);
     return os;
 }
 

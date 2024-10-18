@@ -96,11 +96,19 @@ public:
       std::optional<oauth_token> token = std::nullopt,
       std::unique_ptr<retry_policy> retry_policy = nullptr);
 
+    // Builds the request from supplied builder after validating it, performs
+    // the request with optional payload, and takes care of retrying according
+    // to policy
+    ss::future<expected<iobuf>> perform_request(
+      retry_chain_node& rtc,
+      http::request_builder request_builder,
+      std::optional<iobuf> payload = std::nullopt);
+
 private:
     // The root url calculated from base url, prefix and api version. Given a
-    // base url of "/b", an api version "v2" and a prefix of "x/y", the root url
-    // is "/b/v2/x/y/". The root url is prefixed before rest entities used when
-    // making calls to the catalog service
+    // base url of "/b", an api version "v2" and a prefix of "x/y", the root
+    // url is "/b/v2/x/y/". The root url is prefixed before rest entities used
+    // when making calls to the catalog service
     ss::sstring root_path() const;
 
     // Acquires token from catalog API by exchanging credentials
@@ -109,14 +117,6 @@ private:
     // Ensures a token is acquired if current token is unset (default state) or
     // expired. Acquired token is cached for future calls.
     ss::future<expected<ss::sstring>> ensure_token(retry_chain_node& rtc);
-
-    // Builds the request from supplied builder after validating it, performs
-    // the request with optional payload, and takes care of retrying according
-    // to policy
-    ss::future<expected<iobuf>> perform_request(
-      retry_chain_node& rtc,
-      http::request_builder request_builder,
-      std::optional<iobuf> payload = std::nullopt);
 
     std::reference_wrapper<client_source> _client_source;
     ss::sstring _endpoint;
