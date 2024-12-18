@@ -891,3 +891,26 @@ redpanda_cc_bench(
         "@seastar//:benchmark",
     ],
 )
+
+redpanda_cc_gtest(
+    name = "log_inspector_test",
+    timeout = "short",
+    srcs = [
+        "log_inspector_test.cc",
+    ],
+    deps = [
+        "//src/v/base",
+        "//src/v/config",
+        "//src/v/features",
+        "//src/v/model",
+        "//src/v/raft",
+        "//src/v/random:generators",
+        "//src/v/reflection:adl",
+        "//src/v/storage",
+        "//src/v/storage:resources",
+        "//src/v/test_utils:gtest",
+        "@fmt",
+        "@googletest//:gtest",
+        "@seastar",
+    ],
+)

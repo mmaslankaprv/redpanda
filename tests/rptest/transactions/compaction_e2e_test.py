@@ -24,6 +24,9 @@ from rptest.transactions.verifiers.compacted_verifier import CompactedVerifier, 
 from rptest.tests.partition_movement import PartitionMovementMixin
 from rptest.services.metrics_check import MetricCheck
 
+from rptest.utils.node_operations import  verify_offset_translator_state_consistent
+
+
 
 class CompactionE2EIdempotencyTest(RedpandaTest):
     def __init__(self, test_context):
@@ -248,6 +251,7 @@ class CompactionWithRecoveryTest(RedpandaTest, PartitionMovementMixin):
         workload.remote_wait_producer()
         workload.remote_start_consumer()
         workload.remote_wait_consumer(timeout_sec=60)
+        verify_offset_translator_state_consistent(self.redpanda)
 
 
 class CompactionE2ERebootTest(RedpandaTest):

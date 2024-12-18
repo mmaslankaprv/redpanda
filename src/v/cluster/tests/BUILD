@@ -613,6 +613,50 @@ redpanda_cc_gtest(
 )
 
 redpanda_cc_gtest(
+    name = "controller_snapshot_override",
+    timeout = "short",
+    srcs = [
+        "controller_snapshot_override.cc",
+    ],
+    deps = [
+        "//src/v/cluster",
+        "//src/v/config",
+        "//src/v/model",
+        "//src/v/raft",
+        "//src/v/raft/tests:raft_fixture",
+        "//src/v/storage",
+        "//src/v/test_utils:gtest",
+        "//src/v/test_utils:seastar_boost",
+        "//src/v/utils:to_string",
+        "@googletest//:gtest",
+        "@seastar",
+        "@seastar//:testing",
+    ],
+)
+
+redpanda_cc_gtest(
+    name = "controller_snapshot_override",
+    timeout = "short",
+    srcs = [
+        "controller_snapshot_override.cc",
+    ],
+    deps = [
+        "//src/v/cluster",
+        "//src/v/config",
+        "//src/v/model",
+        "//src/v/raft",
+        "//src/v/raft/tests:raft_fixture",
+        "//src/v/storage",
+        "//src/v/test_utils:gtest",
+        "//src/v/test_utils:seastar_boost",
+        "//src/v/utils:to_string",
+        "@googletest//:gtest",
+        "@seastar",
+        "@seastar//:testing",
+    ],
+)
+
+redpanda_cc_gtest(
     name = "log_eviction_stm_test",
     timeout = "short",
     srcs = [
