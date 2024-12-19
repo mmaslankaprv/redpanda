@@ -147,6 +147,20 @@ rp_test(
 rp_test(
   UNIT_TEST
   GTEST
+  BINARY_NAME log_inspector
+  SOURCES
+    log_inspector_test.cc
+  LIBRARIES
+    v::gtest_main
+    v::storage
+    v::features
+  ARGS "-- -c 1"
+  LABELS storage
+)
+
+rp_test(
+  UNIT_TEST
+  GTEST
   BINARY_NAME gtest_storage
   SOURCES
     scoped_file_tracker_test.cc
