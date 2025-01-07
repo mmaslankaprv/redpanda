@@ -3,7 +3,9 @@
 #include "features/feature_table.h"
 #include "finjector/stress_fiber.h"
 #include "model/fundamental.h"
+#include "raft/types.h"
 #include "random/generators.h"
+#include "reflection/adl.h"
 #include "storage/api.h"
 #include "storage/kvstore.h"
 #include "storage/log_manager.h"
@@ -19,8 +21,7 @@
 
 using namespace std::chrono_literals;
 
-std::string_view dir
-  = "/home/mmaslanka/dev/support/delta-inconsistency/test_data";
+std::string_view dir = "/home/mmaslanka/dev/support/jci/node-2";
 
 storage::kvstore_config kv_cfg() {
     return {10_MiB, config::mock_binding(10ms), ss::sstring(dir), std::nullopt};
@@ -287,8 +288,9 @@ struct producer {
     size_t segments = 0;
     chunked_vector<model::offset> archival_batch_offsets;
 };
-storage::ntp_config make_ntp_config(const model::ntp& ntp) {
-    storage::ntp_config test_ntp_cfg(ntp, ss::sstring(dir));
+storage::ntp_config
+make_ntp_config(const model::ntp& ntp, model::revision_id rev) {
+    storage::ntp_config test_ntp_cfg(ntp, ss::sstring(dir), nullptr, rev);
     storage::ntp_config::default_overrides o;
     o.cleanup_policy_bitflags = model::cleanup_policy_bitflags::compaction;
 
@@ -298,6 +300,61 @@ storage::ntp_config make_ntp_config(const model::ntp& ntp) {
     test_ntp_cfg.set_overrides(o);
 
     return test_ntp_cfg;
+}
+
+TEST_CORO(compacted_reads, inspect_log) {
+    ss::sharded<features::feature_table> ft;
+
+    co_await ft.start();
+    storage::api storage(&kv_cfg, &log_mgr_cfg, ft);
+    co_await storage.start();
+
+    model::partition_id partition{3};
+    model::ntp test_ntp(
+      model::kafka_namespace, model::topic("test"), partition);
+
+    storage::ntp_config src_ntp_cfg = make_ntp_config(
+      test_ntp, model::revision_id(218));
+    try {
+        auto log = co_await storage.log_mgr().manage(
+          std::move(src_ntp_cfg),
+          raft::group_id(0),
+          model::offset_translator_batch_types());
+        storage::simple_snapshot_manager s_mgr(
+          std::filesystem::path(log->config().work_directory()),
+          storage::simple_snapshot_manager::default_snapshot_filename,
+          ss::default_priority_class());
+        auto snapshot_reader = co_await s_mgr.open_snapshot();
+        auto md_buf = co_await snapshot_reader->read_metadata();
+
+        auto md = reflection::from_iobuf<raft::snapshot_metadata>(
+          std::move(md_buf));
+        fmt::print(
+          "snapshot: last_included: {} log_start_delta: {}\n",
+          md.last_included_index,
+          md.log_start_delta);
+        co_await snapshot_reader->close();
+        storage::truncate_prefix_config tp_cfg(
+          model::next_offset(md.last_included_index),
+          ss::default_priority_class(),
+          model::offset_delta(md.log_start_delta));
+
+        co_await log->start(tp_cfg);
+
+        fmt::print("offsets: {}\n", log->offsets());
+        ss::abort_source as;
+
+        auto reader_0 = co_await log->make_reader(storage::log_reader_config(
+          log->offsets().start_offset,
+          log->offsets().start_offset + model::offset(10),
+          ss::default_priority_class()));
+
+        co_await reader_0.for_each_ref(printing_consumer{}, model::no_timeout);
+    } catch (...) {
+        fmt::print("exception - {}\n", std::current_exception());
+    }
+    co_await storage.stop();
+    co_await ft.stop();
 }
 
 // TEST_CORO(compacted_reads, read_compacted_topic) {
@@ -338,98 +395,100 @@ storage::ntp_config make_ntp_config(const model::ntp& ntp) {
 //     co_await ft.stop();
 // }
 
-TEST(compacted_reads, read_compacted_topic) {
-    std::filesystem::remove_all(dir);
-    std::filesystem::create_directory(dir);
-    stress_fiber_manager stress_mgr;
-    stress_config stress_cfg;
-    stress_cfg.min_spins_per_scheduling_point = 1;
-    stress_cfg.max_spins_per_scheduling_point = 100;
-    stress_cfg.num_fibers = 5;
-    // stress_mgr.start(stress_cfg);
-    ss::sharded<features::feature_table> ft;
-    config::shard_local_cfg().log_compaction_use_sliding_window.set_value(true);
-    ft.start().get();
-    ft.local().testing_activate_all();
-    storage::api storage(&kv_cfg, &log_mgr_cfg, ft);
-    storage.start().get();
-    // auto& kvstore = storage.kvs();
-    model::partition_id partition{2};
+// TEST(compacted_reads, read_compacted_topic) {
+//     std::filesystem::remove_all(dir);
+//     std::filesystem::create_directory(dir);
+//     stress_fiber_manager stress_mgr;
+//     stress_config stress_cfg;
+//     stress_cfg.min_spins_per_scheduling_point = 1;
+//     stress_cfg.max_spins_per_scheduling_point = 100;
+//     stress_cfg.num_fibers = 5;
+//     // stress_mgr.start(stress_cfg);
+//     ss::sharded<features::feature_table> ft;
+//     config::shard_local_cfg().log_compaction_use_sliding_window.set_value(true);
+//     ft.start().get();
+//     ft.local().testing_activate_all();
+//     storage::api storage(&kv_cfg, &log_mgr_cfg, ft);
+//     storage.start().get();
+//     // auto& kvstore = storage.kvs();
+//     model::partition_id partition{2};
 
-    model::ntp compacted_ntp(
-      model::kafka_namespace, model::kafka_consumer_offsets_topic, partition);
+//     model::ntp compacted_ntp(
+//       model::kafka_namespace, model::kafka_consumer_offsets_topic,
+//       partition);
 
-    auto log = storage.log_mgr()
-                 .manage(
-                   make_ntp_config(compacted_ntp),
-                   raft::group_id(0),
-                   model::offset_translator_batch_types())
-                 .get();
-    log->start(std::nullopt).get();
+//     auto log = storage.log_mgr()
+//                  .manage(
+//                    make_ntp_config(compacted_ntp),
+//                    raft::group_id(0),
+//                    model::offset_translator_batch_types())
+//                  .get();
+//     log->start(std::nullopt).get();
 
-    fmt::print("ntp: {}\n", compacted_ntp);
-    ss::abort_source as;
-    producer p;
-    bool stop = false;
-    auto produce_fiber = p.produce_data(log, 100).then([&] {
-        return ss::do_until(
-                 [&] { return log->segment_count() <= 2; },
-                 [&] {
-                     fmt::print(
-                       "waiting for compaction segments: {}\n",
-                       log->segment_count());
-                     return ss::sleep(1s);
-                 })
-          .then([] { return ss::sleep(5s); })
-          .then([&] { stop = true; });
-    });
+//     fmt::print("ntp: {}\n", compacted_ntp);
+//     ss::abort_source as;
+//     producer p;
+//     bool stop = false;
+//     auto produce_fiber = p.produce_data(log, 100).then([&] {
+//         return ss::do_until(
+//                  [&] { return log->segment_count() <= 2; },
+//                  [&] {
+//                      fmt::print(
+//                        "waiting for compaction segments: {}\n",
+//                        log->segment_count());
+//                      return ss::sleep(1s);
+//                  })
+//           .then([] { return ss::sleep(5s); })
+//           .then([&] { stop = true; });
+//     });
 
-    std::unique_ptr<storage::hash_key_offset_map> compaction_hash_key_map
-      = std::make_unique<storage::hash_key_offset_map>();
-    compaction_hash_key_map->initialize(4).get();
+//     std::unique_ptr<storage::hash_key_offset_map> compaction_hash_key_map
+//       = std::make_unique<storage::hash_key_offset_map>();
+//     compaction_hash_key_map->initialize(4).get();
 
-    auto compact = [&] {
-        return ss::do_until(
-          [&] { return stop; },
-          [&] {
-              return log->housekeeping(storage::housekeeping_config(
-                model::timestamp::max(),
-                std::nullopt,
-                model::offset::max(),
-                std::nullopt,
-                ss::default_priority_class(),
-                as,
-                std::nullopt,
-                compaction_hash_key_map.get()));
-          });
-    };
-    auto compact_fiber = compact();
+//     auto compact = [&] {
+//         return ss::do_until(
+//           [&] { return stop; },
+//           [&] {
+//               return log->housekeeping(storage::housekeeping_config(
+//                 model::timestamp::max(),
+//                 std::nullopt,
+//                 model::offset::max(),
+//                 std::nullopt,
+//                 ss::default_priority_class(),
+//                 as,
+//                 std::nullopt,
+//                 compaction_hash_key_map.get()));
+//           });
+//     };
+//     auto compact_fiber = compact();
 
-    produce_fiber.get();
-    compact_fiber.get();
+//     produce_fiber.get();
+//     compact_fiber.get();
 
-    auto archival_after = read_archival_batches_reader(log).get();
-    fmt::print("number of batches: {}\n", p.archival_batch_offsets.size());
+//     auto archival_after = read_archival_batches_reader(log).get();
+//     fmt::print("number of batches: {}\n", p.archival_batch_offsets.size());
 
-    ASSERT_EQ(archival_after.size(), p.archival_batch_offsets.size());
-    {
-        auto reader_0 = log
-                          ->make_reader(storage::log_reader_config(
-                            log->offsets().start_offset,
-                            log->offsets().committed_offset,
-                            ss::default_priority_class()))
-                          .get();
+//     ASSERT_EQ(archival_after.size(), p.archival_batch_offsets.size());
+//     {
+//         auto reader_0 = log
+//                           ->make_reader(storage::log_reader_config(
+//                             log->offsets().start_offset,
+//                             log->offsets().committed_offset,
+//                             ss::default_priority_class()))
+//                           .get();
 
-        reader_0.for_each_ref(printing_consumer{}, model::no_timeout).get();
-    }
-    storage.stop().get();
-    ft.stop().get();
-    for (size_t i = 0; i < p.archival_batch_offsets.size(); ++i) {
-        if (p.archival_batch_offsets[i] != archival_after[i].base_offset) {
-            fmt::print(">>> before-batch: {}\n", p.archival_batch_offsets[i]);
-            fmt::print(">>> after-batch: {}\n", archival_after[i]);
-        }
-    }
+//         reader_0.for_each_ref(printing_consumer{}, model::no_timeout).get();
+//     }
+//     storage.stop().get();
+//     ft.stop().get();
+//     for (size_t i = 0; i < p.archival_batch_offsets.size(); ++i) {
+//         if (p.archival_batch_offsets[i] != archival_after[i].base_offset) {
+//             fmt::print(">>> before-batch: {}\n",
+//             p.archival_batch_offsets[i]); fmt::print(">>> after-batch: {}\n",
+//             archival_after[i]);
+//         }
+//     }
 
-    // stress_mgr.stop().get();
-}
+//     // stress_mgr.stop().get();
+// }

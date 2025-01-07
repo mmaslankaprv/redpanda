@@ -154,6 +154,7 @@ rp_test(
     v::gtest_main
     v::storage
     v::features
+    v::raft
   ARGS "-- -c 1"
   LABELS storage
 )
