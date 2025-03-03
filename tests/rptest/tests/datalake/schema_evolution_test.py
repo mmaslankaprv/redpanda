@@ -863,7 +863,8 @@ class SchemaEvolutionE2ETests(RedpandaTest):
                     },
                 ],
                 generate_record=lambda x: {
-                    "ts": int(x),
+                    # date is number of days since epoch
+                    "ts": int(x) / (3600 * 24),
                 },
                 spark_table=[('ts', 'date')],
                 trino_table=[
