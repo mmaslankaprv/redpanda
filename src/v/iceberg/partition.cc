@@ -10,6 +10,10 @@
 
 #include "iceberg/partition.h"
 
+#include "base/vlog.h"
+#include "iceberg/logger.h"
+#include "iceberg/transform_utils.h"
+
 namespace iceberg {
 
 std::ostream& operator<<(std::ostream& o, const partition_field& f) {
@@ -36,6 +40,14 @@ std::optional<partition_spec> partition_spec::resolve(
         const auto* source_field = schema_type.find_field_by_name(
           field.source_name);
         if (!source_field) {
+            return std::nullopt;
+        }
+        auto err = can_transform(field.transform, source_field->type);
+        if (err) {
+            vlog(
+              log.warn,
+              "Error resolving partition spec: {}",
+              err.value().what());
             return std::nullopt;
         }
 

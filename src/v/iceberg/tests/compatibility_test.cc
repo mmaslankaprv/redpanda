@@ -387,7 +387,6 @@ static const std::vector<struct_evolution_test_case> valid_cases{
           auto& dst_list = get<list_type>(dst.fields.back());
           return updated(*src_list.element_field, *dst_list.element_field);
       },
-    .pspec = "(qux)",
   },
   struct_evolution_test_case{
     .description = "evolving a list-element struct is allowed",
@@ -446,7 +445,6 @@ static const std::vector<struct_evolution_test_case> valid_cases{
           return updated(*src_map.key_field, *dst_map.key_field)
                  && updated(*src_map.value_field, *dst_map.value_field);
       },
-    .pspec = "(a_map)",
   },
   struct_evolution_test_case{
     .description = "we can 'add' nested fields",
@@ -548,7 +546,6 @@ static const std::vector<struct_evolution_test_case> valid_cases{
                  && dst_nested.fields.empty()
                  && removed(*src_nested.fields.back());
       },
-    .pspec = "(nested)", // TODO(oren): seems wrong frankly, should this fail?
   },
   struct_evolution_test_case{
     .description
@@ -676,7 +673,6 @@ static const std::vector<struct_evolution_test_case> valid_cases{
     // should reordered fields in a schema correspond to some parquet layout
     // change on disk?
     .any_change = schema_changed::no,
-    .pspec = "(quux,location)",
   },
   struct_evolution_test_case{
     .description
@@ -1031,6 +1027,7 @@ public:
         if (!raw.has_value()) {
             return partition_spec{};
         }
+        fmt::print(">>> RAW: {}\n", raw.value());
         auto parsed = datalake::parse_partition_spec(raw.value());
         EXPECT_TRUE(parsed.has_value()) << GetParam();
         auto resolved = partition_spec::resolve(parsed.value(), s);

@@ -11,9 +11,19 @@
 
 #include "iceberg/transform.h"
 #include "iceberg/values.h"
+#include "iceberg/datatypes.h"
 
 namespace iceberg {
+class partition_spec_field_error : std::exception {
+public:
+    explicit partition_spec_field_error(std::string msg) noexcept
+      : msg_(std::move(msg)) {}
 
+    const char* what() const noexcept final { return msg_.c_str(); }
+
+private:
+    std::string msg_;
+};
 // Transforms the given value to its appropriate Iceberg value based on the
 // input transform.
 //
@@ -21,4 +31,7 @@ namespace iceberg {
 // This will throw if used for anything else!
 value apply_transform(const value&, const transform&);
 
+// Returns true if the given transform can be applied to the given primitive
+std::optional<partition_spec_field_error>
+can_transform(const transform&, const field_type&);
 } // namespace iceberg

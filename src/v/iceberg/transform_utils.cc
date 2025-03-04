@@ -13,6 +13,8 @@
 #include "iceberg/time_transform_visitor.h"
 #include "iceberg/transform.h"
 
+#include <seastar/util/variant_utils.hh>
+
 namespace iceberg {
 
 struct transform_applying_visitor {
@@ -45,4 +47,145 @@ value apply_transform(const value& source_val, const transform& transform) {
     return std::visit(transform_applying_visitor{source_val}, transform);
 }
 
+namespace {
+
+bool is_date_or_timestamp(const primitive_type& field_type) {
+    return std::holds_alternative<date_type>(field_type)
+           || std::holds_alternative<timestamptz_type>(field_type)
+           || std::holds_alternative<timestamptz_type>(field_type);
+}
+
+struct transform_application_validating_visitor {
+    explicit transform_application_validating_visitor(
+      const primitive_type& field_type)
+      : field_type(field_type) {}
+
+    std::optional<partition_spec_field_error>
+    operator()(const identity_transform&) {
+        return std::nullopt;
+    }
+
+    std::optional<partition_spec_field_error>
+    operator()(const bucket_transform&) {
+        return ss::visit(
+          field_type,
+          [](const int_type&) {
+              return std::optional<partition_spec_field_error>{};
+          },
+          [](const long_type&) {
+              return std::optional<partition_spec_field_error>{};
+          },
+          [](const date_type&) {
+              return std::optional<partition_spec_field_error>{};
+          },
+          [](const time_type&) {
+              return std::optional<partition_spec_field_error>{};
+          },
+          [](const timestamp_type&) {
+              return std::optional<partition_spec_field_error>{};
+          },
+          [](const timestamptz_type&) {
+              return std::optional<partition_spec_field_error>{};
+          },
+          [](const string_type&) {
+              return std::optional<partition_spec_field_error>{};
+          },
+          [](const binary_type&) {
+              return std::optional<partition_spec_field_error>{};
+          },
+          [](const fixed_type&) {
+              return std::optional<partition_spec_field_error>{};
+          },
+          [](const decimal_type&) {
+              return std::optional<partition_spec_field_error>{};
+          },
+          [](const uuid_type&) {
+              return std::optional<partition_spec_field_error>{};
+          },
+          [](const auto& f) {
+              return std::make_optional<partition_spec_field_error>(fmt::format(
+                "Can not apply truncate transform to the filed {}", f));
+          });
+    }
+    std::optional<partition_spec_field_error>
+    operator()(const truncate_transform&) {
+        return ss::visit(
+          field_type,
+          [this](const auto&) {
+              return std::make_optional<partition_spec_field_error>(fmt::format(
+                "Can not apply truncate transform to the filed {}",
+                field_type));
+          },
+          [](const int_type&) {
+              return std::optional<partition_spec_field_error>{};
+          },
+          [](const long_type&) {
+              return std::optional<partition_spec_field_error>{};
+          },
+          [](const string_type&) {
+              return std::optional<partition_spec_field_error>{};
+          },
+          [](const binary_type&) {
+              return std::optional<partition_spec_field_error>{};
+          },
+          [](const decimal_type&) {
+              return std::optional<partition_spec_field_error>{};
+          });
+    }
+    std::optional<partition_spec_field_error>
+    operator()(const year_transform& tr) {
+        return validate_date_time_transform(tr);
+    }
+    std::optional<partition_spec_field_error>
+    operator()(const month_transform& tr) {
+        return validate_date_time_transform(tr);
+    }
+    std::optional<partition_spec_field_error>
+    operator()(const day_transform& tr) {
+        return validate_date_time_transform(tr);
+    }
+    std::optional<partition_spec_field_error>
+    operator()(const hour_transform&) {
+        if (
+          std::holds_alternative<timestamp_type>(field_type)
+          || std::holds_alternative<timestamptz_type>(field_type)) {
+            return std::nullopt;
+        }
+        return partition_spec_field_error(fmt::format(
+          "Can not apply hour transform to non timestamp field: {}",
+          field_type));
+    }
+    std::optional<partition_spec_field_error>
+    operator()(const void_transform&) {
+        return std::nullopt;
+    }
+
+private:
+    template<typename T>
+    std::optional<partition_spec_field_error>
+    validate_date_time_transform(const T& transform_type) {
+        if (is_date_or_timestamp(field_type)) {
+            return std::nullopt;
+        }
+        return partition_spec_field_error(fmt::format(
+          "Can not apply {} transform to non or date timestamp field: {}",
+          transform_type,
+          field_type));
+    }
+    const primitive_type& field_type;
+};
+} // namespace
+
+std::optional<partition_spec_field_error>
+can_transform(const transform& tr, const field_type& field_type) {
+    if (!std::holds_alternative<primitive_type>(field_type)) {
+        return partition_spec_field_error(fmt::format(
+          "Can not apply transform to non-primitive field: {}", field_type));
+    }
+
+    return std::visit(
+      transform_application_validating_visitor(
+        std::get<primitive_type>(field_type)),
+      tr);
+}
 } // namespace iceberg
