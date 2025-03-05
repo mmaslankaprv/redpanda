@@ -484,6 +484,7 @@ redpanda_cc_gtest(
         "//src/v/iceberg:values",
         "//src/v/model",
         "//src/v/test_utils:gtest",
+        "@fmt",
         "@googletest//:gtest",
     ],
 )

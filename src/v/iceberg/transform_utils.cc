@@ -36,6 +36,22 @@ struct transform_applying_visitor {
         return v;
     }
 
+    value operator()(const day_transform&) {
+        int_value v{
+          std::visit(time_transform_visitor<std::chrono::days>{}, source_val_)};
+        return v;
+    }
+    value operator()(const month_transform&) {
+        int_value v{std::visit(
+          time_transform_visitor<std::chrono::months>{}, source_val_)};
+        return v;
+    }
+    value operator()(const year_transform&) {
+        int_value v{std::visit(
+          time_transform_visitor<std::chrono::years>{}, source_val_)};
+        return v;
+    }
+
     template<typename T>
     value operator()(const T&) {
         throw std::invalid_argument(
