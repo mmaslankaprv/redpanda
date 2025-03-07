@@ -10,6 +10,7 @@
 
 #include "iceberg/transform_utils.h"
 
+#include "iceberg/bucket_transform_hashing_visitor.h"
 #include "iceberg/time_transform_visitor.h"
 #include "iceberg/transform.h"
 
@@ -51,11 +52,25 @@ struct transform_applying_visitor {
           time_transform_visitor<std::chrono::years>{}, source_val_)};
         return v;
     }
-
-    template<typename T>
-    value operator()(const T&) {
-        throw std::invalid_argument(
-          "transform_applying_visitor not implemented for transform");
+    value operator()(const bucket_transform& tr) {
+        auto primitive = std::get_if<primitive_value>(&source_val_);
+        if (!primitive) {
+            throw std::invalid_argument(
+              fmt::format("value {} must be primitive", source_val_));
+        }
+        auto hash_raw = std::visit(
+          bucket_transform_hashing_visitor{}, *primitive);
+        auto hash
+          = (static_cast<int32_t>(hash_raw) & std::numeric_limits<int32_t>::max());
+        fmt::print(
+          "primitive: {}, hraw: {}, h: {}\n", *primitive, hash_raw, hash);
+        return int_value{hash % static_cast<int32_t>(tr.n)};
+    }
+    value operator()(const truncate_transform&) {
+        return make_copy(source_val_);
+    }
+    value operator()(const void_transform&) {
+        throw std::runtime_error("not implemented");
     }
 };
 
