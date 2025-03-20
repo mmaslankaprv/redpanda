@@ -902,6 +902,7 @@ redpanda_cc_gtest(
         "//src/v/base",
         "//src/v/config",
         "//src/v/features",
+        "//src/v/kafka/server",
         "//src/v/model",
         "//src/v/raft",
         "//src/v/random:generators",

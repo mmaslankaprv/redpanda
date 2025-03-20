@@ -1,5 +1,6 @@
 
 #include "config/property.h"
+#include "kafka/server/group_data_parser.h"
 #include "model/fundamental.h"
 #include "raft/types.h"
 #include "random/generators.h"
@@ -19,7 +20,8 @@
 
 using namespace std::chrono_literals;
 
-std::string_view dir = "/home/mmaslanka/dev/support/leader-epoch/data";
+std::string_view dir
+  = "/home/mmaslanka/dev/support/wunderkind/n0/var/lib/redpanda/data";
 
 storage::kvstore_config kv_cfg() {
     return {10_MiB, config::mock_binding(10ms), ss::sstring(dir), std::nullopt};
@@ -31,6 +33,43 @@ struct printing_consumer {
     ss::future<ss::stop_iteration>
     operator()(const model::record_batch& batch) {
         fmt::print("batch: {}\n", batch.header());
+        co_return ss::stop_iteration::no;
+    }
+
+    void end_of_stream() {}
+};
+static auto serializer = kafka::make_consumer_offsets_serializer();
+void handle_record(model::record r) {
+    try {
+        auto record_type = serializer.get_metadata_type(r.key().copy());
+        switch (record_type) {
+        case kafka::offset_commit: {
+            auto v = serializer.decode_offset_metadata(std::move(r));
+            fmt::print(
+              "offset_commit: {}/{} offset: {}\n",
+              v.key.topic,
+              v.key.partition,
+              v.value->offset);
+            return;
+        }
+        case kafka::group_metadata:
+            serializer.decode_group_metadata(std::move(r));
+            return;
+        case kafka::noop:
+            // ignore noops, they are handled for backward compatibility
+            return;
+        }
+        __builtin_unreachable();
+    } catch (...) {
+    }
+}
+
+struct co_printing_consumer {
+    ss::future<ss::stop_iteration>
+    operator()(const model::record_batch& batch) {
+        fmt::print("batch: {}\n", batch.header());
+        batch.for_each_record(
+          [&](model::record r) { handle_record(std::move(r)); });
         co_return ss::stop_iteration::no;
     }
 
@@ -52,71 +91,6 @@ struct collecting_consumer {
         return std::move(headers);
     }
 };
-
-// TEST_CORO(kv_override, override_configuration) {
-//     ss::sharded<features::feature_table> ft;
-//     config::shard_local_cfg().log_compaction_use_sliding_window.set_value(true);
-//     co_await ft.start();
-//     storage::api storage(&kv_cfg, &log_mgr_cfg, ft);
-//     co_await storage.start();
-//     // auto& kvstore = storage.kvs();
-//     model::ntp cg_0(
-//       model::kafka_namespace, model::kafka_consumer_offsets_topic, 2);
-//     // model::ntp cg_1(model::kafka_namespace, model::topic("test"), 1);
-//     // model::ntp cg_2(model::kafka_namespace, model::topic("test"), 2);
-//     storage::ntp_config cfg_0(cg_0, ss::sstring(dir));
-//     storage::ntp_config::default_overrides o;
-//     o.cleanup_policy_bitflags = model::cleanup_policy_bitflags::compaction;
-//     cfg_0.set_overrides(o);
-//     // storage::ntp_config cfg_1(cg_1, ss::sstring(dir));
-//     // storage::ntp_config cfg_2(cg_2, ss::sstring(dir));
-
-//     auto log_0 = co_await storage.log_mgr().manage(
-//       std::move(cfg_0),
-//       raft::group_id(0),
-//       model::offset_translator_batch_types());
-
-//     // auto log_1 = co_await storage.log_mgr().manage(
-//     //   std::move(cfg_1),
-//     //   raft::group_id(2),
-//     //   model::offset_translator_batch_types());
-
-//     // auto log_2 = co_await storage.log_mgr().manage(
-//     //   std::move(cfg_2),
-//     //   raft::group_id(2),
-//     //   model::offset_translator_batch_types());
-
-//     fmt::print("ntp: {}", cg_0);
-//     fmt::print("offsets: {}\n", log_0->offsets());
-//     ss::abort_source as;
-
-//     // std::unique_ptr<storage::hash_key_offset_map> compaction_hash_key_map
-//     //   = std::make_unique<storage::hash_key_offset_map>();
-//     // co_await compaction_hash_key_map->initialize(64 * 1024 * 1024);
-//     // for (int i = 0; i < 50000; ++i) {
-//     //     co_await log_0->housekeeping(storage::housekeeping_config(
-//     //       model::timestamp::max(),
-//     //       std::nullopt,
-//     //       model::offset::max(),
-//     //       std::nullopt,
-//     //       ss::default_priority_class(),
-//     //       as,
-//     //       std::nullopt,
-//     //       compaction_hash_key_map.get()));
-//     // }
-//     {
-//         auto reader_0 = co_await
-//         log_0->make_reader(storage::log_reader_config(
-//           log_0->offsets().start_offset,
-//           log_0->offsets().committed_offset,
-//           ss::default_priority_class()));
-
-//         co_await reader_0.for_each_ref(printing_consumer{},
-//         model::no_timeout);
-//     }
-//     co_await storage.stop();
-//     co_await ft.stop();
-// }
 using log_ptr = ss::shared_ptr<storage::log>;
 ss::future<fragmented_vector<model::record_batch>>
 read_log(log_ptr log, model::offset next_to_read) {
@@ -152,6 +126,21 @@ ss::future<fragmented_vector<model::record_batch>> read_kafka_log(log_ptr log) {
 
     co_return co_await model::consume_reader_to_fragmented_memory(
       std::move(reader), model::no_timeout);
+}
+
+ss::future<> print_kafka_log(log_ptr log) {
+    storage::log_reader_config config(
+      log->offsets().start_offset,
+      model::offset::max(),
+      0,
+      100 * 1024 * 1024,
+      ss::default_priority_class(),
+      std::nullopt,
+      std::nullopt,
+      std::nullopt);
+    config.fill_gaps = false;
+    auto reader = co_await log->make_reader(config);
+    co_await reader.for_each_ref(co_printing_consumer{}, model::no_timeout);
 }
 
 ss::future<> read_in_ranges(log_ptr log) {
@@ -318,91 +307,15 @@ storage::ntp_config make_ntp_config(
     return test_ntp_cfg;
 }
 
-// TEST_CORO(compacted_reads, inspect_log) {
-//     ss::sharded<features::feature_table> ft;
-
-//     co_await ft.start();
-//     storage::api storage(&kv_cfg, &log_mgr_cfg, ft);
-//     co_await storage.start();
-
-//     model::partition_id partition{0};
-//     model::ntp test_ntp(
-//       model::kafka_namespace, model::topic("test"), partition);
-
-//     storage::ntp_config src_ntp_cfg = make_ntp_config(
-//       test_ntp, model::revision_id(0));
-
-//     auto log = co_await storage.log_mgr().manage(
-//       std::move(src_ntp_cfg),
-//       raft::group_id(0),
-//       model::offset_translator_batch_types());
-// }
-
-TEST_CORO(compacted_reads, read_compacted_topic) {
-    ss::sharded<features::feature_table> ft;
-    config::shard_local_cfg().log_compaction_use_sliding_window.set_value(true);
-    co_await ft.start();
-    storage::api storage(&kv_cfg, &log_mgr_cfg, ft);
-    co_await storage.start();
-    // auto& kvstore = storage.kvs();
-    model::partition_id partition{2};
-    model::ntp test_ntp(model::kafka_namespace, "test", partition);
-
-    storage::ntp_config src_ntp_cfg = make_ntp_config(test_ntp);
-    try {
-        auto log = co_await storage.log_mgr().manage(
-          make_ntp_config(test_ntp),
-          raft::group_id(0),
-          model::offset_translator_batch_types());
-        co_await log->start(storage::truncate_prefix_config(
-          model::offset(110),
-          ss::default_priority_class(),
-          model::offset_delta{101}));
-
-        fmt::print(">>> {}\n", log->offsets());
-        auto tlo = log->get_term_last_offset(model::term_id(54));
-        fmt::print(
-          ">>> term {} last offset: {} translated: {}\n",
-          54,
-          log->get_term_last_offset(model::term_id(54)),
-          log->get_offset_translator_state()->from_log_offset(*tlo));
-
-        co_await read_in_ranges(log);
-
-        auto batches = co_await read_kafka_log(log);
-        for (auto& b : batches) {
-            fmt::print(
-              ">>> BATCH: {} kafka_offset: {}\n",
-              b.header(),
-              log->get_offset_translator_state()->from_log_offset(
-                b.header().base_offset));
-        }
-
-    } catch (...) {
-        fmt::print(">>> ERROR: {}\n", std::current_exception());
-    }
-    co_await storage.stop();
-    co_await ft.stop();
-    ASSERT_FALSE_CORO(true);
-}
-
 // TEST(compacted_reads, read_compacted_topic) {
-//     std::filesystem::remove_all(dir);
-//     std::filesystem::create_directory(dir);
-//     stress_fiber_manager stress_mgr;
-//     stress_config stress_cfg;
-//     stress_cfg.min_spins_per_scheduling_point = 1;
-//     stress_cfg.max_spins_per_scheduling_point = 100;
-//     stress_cfg.num_fibers = 5;
-//     // stress_mgr.start(stress_cfg);
 //     ss::sharded<features::feature_table> ft;
 //     config::shard_local_cfg().log_compaction_use_sliding_window.set_value(true);
 //     ft.start().get();
 //     ft.local().testing_activate_all();
 //     storage::api storage(&kv_cfg, &log_mgr_cfg, ft);
 //     storage.start().get();
-//     // auto& kvstore = storage.kvs();
-//     model::partition_id partition{2};
+
+//     model::partition_id partition{14};
 
 //     model::ntp compacted_ntp(
 //       model::kafka_namespace, model::kafka_consumer_offsets_topic,
@@ -410,76 +323,56 @@ TEST_CORO(compacted_reads, read_compacted_topic) {
 
 //     auto log = storage.log_mgr()
 //                  .manage(
-//                    make_ntp_config(compacted_ntp),
-//                    raft::group_id(0),
+//                    make_ntp_config(compacted_ntp,
+//                    model::revision_id(23910067)), raft::group_id(0),
 //                    model::offset_translator_batch_types())
 //                  .get();
 //     log->start(std::nullopt).get();
+//     kafka::group_recovery_consumer consumer(
+//       log, model::no_timeout, ss::default_priority_class());
 
-//     fmt::print("ntp: {}\n", compacted_ntp);
-//     ss::abort_source as;
-//     producer p;
-//     bool stop = false;
-//     auto produce_fiber = p.produce_data(log, 100).then([&] {
-//         return ss::do_until(
-//                  [&] { return log->segment_count() <= 2; },
-//                  [&] {
-//                      fmt::print(
-//                        "waiting for compaction segments: {}\n",
-//                        log->segment_count());
-//                      return ss::sleep(1s);
-//                  })
-//           .then([] { return ss::sleep(5s); })
-//           .then([&] { stop = true; });
-//     });
-
-//     std::unique_ptr<storage::hash_key_offset_map> compaction_hash_key_map
-//       = std::make_unique<storage::hash_key_offset_map>();
-//     compaction_hash_key_map->initialize(4).get();
-
-//     auto compact = [&] {
-//         return ss::do_until(
-//           [&] { return stop; },
-//           [&] {
-//               return log->housekeeping(storage::housekeeping_config(
-//                 model::timestamp::max(),
-//                 std::nullopt,
-//                 model::offset::max(),
-//                 std::nullopt,
-//                 ss::default_priority_class(),
-//                 as,
-//                 std::nullopt,
-//                 compaction_hash_key_map.get()));
-//           });
-//     };
-//     auto compact_fiber = compact();
-
-//     produce_fiber.get();
-//     compact_fiber.get();
-
-//     auto archival_after = read_archival_batches_reader(log).get();
-//     fmt::print("number of batches: {}\n", p.archival_batch_offsets.size());
-
-//     ASSERT_EQ(archival_after.size(), p.archival_batch_offsets.size());
-//     {
-//         auto reader_0 = log
-//                           ->make_reader(storage::log_reader_config(
-//                             log->offsets().start_offset,
-//                             log->offsets().committed_offset,
-//                             ss::default_priority_class()))
-//                           .get();
-
-//         reader_0.for_each_ref(printing_consumer{}, model::no_timeout).get();
-//     }
 //     storage.stop().get();
-//     ft.stop().get();
-//     for (size_t i = 0; i < p.archival_batch_offsets.size(); ++i) {
-//         if (p.archival_batch_offsets[i] != archival_after[i].base_offset) {
-//             fmt::print(">>> before-batch: {}\n",
-//             p.archival_batch_offsets[i]); fmt::print(">>> after-batch: {}\n",
-//             archival_after[i]);
-//         }
-//     }
-
-//     // stress_mgr.stop().get();
 // }
+
+TEST(compacted_reads, read_compacted_topic) {
+    ss::sharded<features::feature_table> ft;
+    config::shard_local_cfg().log_compaction_use_sliding_window.set_value(true);
+    ft.start().get();
+    ft.local().testing_activate_all();
+    storage::api storage(&kv_cfg, &log_mgr_cfg, ft);
+    storage.start().get();
+
+    model::partition_id partition{14};
+
+    model::ntp compacted_ntp(
+      model::kafka_namespace, model::kafka_consumer_offsets_topic, partition);
+
+    auto log = storage.log_mgr()
+                 .manage(
+                   make_ntp_config(compacted_ntp, model::revision_id(23880324)),
+                   raft::group_id(0),
+                   model::offset_translator_batch_types())
+                 .get();
+    log->start(std::nullopt).get();
+    print_kafka_log(log).get();
+
+    ss::abort_source as;
+    for (auto i = 0; i < 50; ++i) {
+        log
+          ->housekeeping(storage::housekeeping_config(
+            model::timestamp::max(),
+            std::nullopt,
+            model::offset::max(),
+            std::nullopt,
+            ss::default_priority_class(),
+            as,
+            std::nullopt))
+          .get();
+    }
+    fmt::print(">>> COMPACTED LOGS\n");
+    print_kafka_log(log).get();
+
+    storage.stop().get();
+    ft.stop().get();
+    ASSERT_TRUE(false);
+}
