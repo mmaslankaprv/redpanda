@@ -158,6 +158,18 @@ rp_test(
 )
 
 rp_test(
+  UNIT_TEST
+  GTEST
+  BINARY_NAME inspector
+  SOURCES
+    log_inspector_test.cc
+  LIBRARIES  v::storage v::storage_test_utils v::gtest_main v::kafka
+  LABELS storage
+  ARGS "-- -c 1"
+)
+
+
+rp_test(
   FIXTURE_TEST
   GTEST
   BINARY_NAME gtest_storage_e2e
