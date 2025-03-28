@@ -19,6 +19,7 @@
 #include "datalake/record_translator.h"
 #include "datalake/serde_parquet_writer.h"
 #include "datalake/translation/state_machine.h"
+#include "datalake/translation/utils.h"
 #include "datalake/translation_task.h"
 #include "kafka/data/partition_proxy.h"
 #include "kafka/utils/txn_reader.h"
@@ -756,20 +757,24 @@ public:
     std::optional<size_t> translation_backlog() const final {
         auto highest_translated_offset
           = _stm->cached_highest_translated_offset();
-        if (
-          !highest_translated_offset
-          || highest_translated_offset < kafka::offset{0}) {
+
+        if (!highest_translated_offset) {
             return std::nullopt;
         }
+
         auto min_offset_for_translation = calculate_min_offset_for_translation(
           _partition->is_read_replica_mode_enabled(), *_partition_proxy);
+
         if (highest_translated_offset <= min_offset_for_translation) {
             return _partition->size_bytes();
         }
         const auto highest_translated_log_offset
-          = _partition->log()->to_log_offset(
-            kafka::offset_cast(*highest_translated_offset));
-        const auto max_translatable_offset = _partition->last_stable_offset();
+          = highest_log_offset_below_next(
+            _partition->log(), *highest_translated_offset);
+
+        const auto max_translatable_offset = model::prev_offset(
+          _partition->last_stable_offset());
+
         if (highest_translated_log_offset == max_translatable_offset) {
             return 0;
         }

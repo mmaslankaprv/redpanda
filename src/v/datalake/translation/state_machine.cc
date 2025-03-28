@@ -180,7 +180,7 @@ model::offset translation_stm::max_collectible_offset() {
     }
 
     return highest_log_offset_below_next(
-      _raft->log(), _highest_translated_offset);
+      _raft->log(), _highest_translated_offset.value_or(kafka::offset{}));
 }
 
 ss::future<raft::local_snapshot_applied> translation_stm::apply_local_snapshot(
@@ -195,7 +195,8 @@ ss::future<raft::stm_snapshot>
 translation_stm::take_local_snapshot(ssx::semaphore_units apply_units) {
     auto snapshot_offset = last_applied_offset();
     snapshot snap{
-      .highest_translated_offset = _highest_translated_offset,
+      .highest_translated_offset = _highest_translated_offset.value_or(
+        kafka::offset{}),
       .last_translated_timestamp = _last_translated_timestamp,
     };
     apply_units.return_all();

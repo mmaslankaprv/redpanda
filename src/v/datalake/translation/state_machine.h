@@ -103,7 +103,7 @@ private:
 
     void update_highest_translated_offset(kafka::offset new_offset);
 
-    kafka::offset _highest_translated_offset{};
+    std::optional<kafka::offset> _highest_translated_offset;
 
     // approximate system time at which _highest_translated_offset became
     // available for translation.
