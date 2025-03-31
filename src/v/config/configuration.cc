@@ -3974,7 +3974,7 @@ configuration::configuration()
       "to the backlog size error. More negative value means larger and faster "
       "changes in the number of shares in the datalake scheduling group.",
       {.needs_restart = needs_restart::no, .visibility = visibility::tunable},
-      -0.0003)
+      -0.000008)
   , iceberg_target_backlog_size(
       *this,
       "iceberg_target_backlog_size",
@@ -3983,7 +3983,7 @@ configuration::configuration()
       "larger than the setpoint a backlog controller will increase the "
       "translation scheduling group priority.",
       {.needs_restart = needs_restart::no, .visibility = visibility::tunable},
-      5_MiB,
+      64_MiB,
       {.min = 0, .max = std::numeric_limits<uint32_t>::max()})
   , iceberg_delete(
       *this,

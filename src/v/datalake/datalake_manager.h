@@ -117,7 +117,7 @@ private:
 
     ss::future<> handle_translator_state_change(const model::ntp&);
 
-    double average_translation_backlog();
+    size_t total_translation_backlog() const;
 
     /// \note The probe is created on the first use.
     ss::lw_shared_ptr<translation_probe> get_or_create_probe(const model::ntp&);
