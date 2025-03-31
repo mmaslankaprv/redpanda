@@ -739,6 +739,7 @@ struct configuration final : public config_store {
     enum_property<datalake_catalog_auth_mode>
       iceberg_rest_catalog_authentication_mode;
     property<double> iceberg_backlog_controller_p_coeff;
+    property<double> iceberg_backlog_controller_i_coeff;
     bounded_property<uint32_t> iceberg_target_backlog_size;
 
     property<bool> iceberg_delete;
