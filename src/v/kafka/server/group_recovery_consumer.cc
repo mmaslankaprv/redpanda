@@ -171,6 +171,7 @@ group_recovery_consumer::operator()(model::record_batch batch) {
     if (_as.abort_requested()) {
         co_return ss::stop_iteration::yes;
     }
+    fmt::print("batch: {}\n", batch.header());
     _state.last_read_offset = batch.last_offset();
     co_await base_t::parse(std::move(batch));
     co_return ss::stop_iteration::no;
@@ -182,7 +183,8 @@ void group_recovery_consumer::handle_record(model::record r) {
         switch (record_type) {
         case offset_commit:
             handle_offset_metadata(
-              _serializer.decode_offset_metadata(std::move(r)));
+              _serializer.decode_offset_metadata(std::move(r)),
+              model::offset(r.offset_delta()) + _batch_base_offset);
             return;
         case group_metadata:
             handle_group_metadata(
@@ -220,13 +222,15 @@ void group_recovery_consumer::handle_group_metadata(group_metadata_kv md) {
     }
 }
 
-void group_recovery_consumer::handle_offset_metadata(offset_metadata_kv md) {
+void group_recovery_consumer::handle_offset_metadata(
+  offset_metadata_kv md, model::offset offset) {
     model::topic_partition tp(md.key.topic, md.key.partition);
     if (md.value) {
         vlog(
           cg_klog.trace,
-          "[group: {}] recovered {}/{} committed offset: {}",
+          "[group: {}] log_offset: {}, recovered {}/{} committed offset: {}",
           md.key.group_id,
+          offset,
           md.key.topic,
           md.key.partition,
           *md.value);
@@ -237,8 +241,7 @@ void group_recovery_consumer::handle_offset_metadata(offset_metadata_kv md) {
         if (_state.has_offset_retention_feature_fence) {
             md.value->non_reclaimable = false;
         }
-        group_it->second.update_offset(
-          tp, _batch_base_offset, std::move(*md.value));
+        group_it->second.update_offset(tp, offset, std::move(*md.value));
     } else {
         vlog(
           cg_klog.trace,

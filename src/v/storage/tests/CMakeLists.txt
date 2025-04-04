@@ -162,6 +162,7 @@ rp_test(
     v::storage
     v::features
     v::raft
+    v::kafka
   ARGS "-- -c 1"
   LABELS storage
 )

@@ -72,7 +72,7 @@ public:
 private:
     void handle_record(model::record);
     void handle_group_metadata(group_metadata_kv);
-    void handle_offset_metadata(offset_metadata_kv);
+    void handle_offset_metadata(offset_metadata_kv, model::offset);
     group_recovery_consumer_state _state;
     model::offset _batch_base_offset;
     group_metadata_serializer _serializer;

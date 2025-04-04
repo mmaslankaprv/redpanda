@@ -910,6 +910,7 @@ redpanda_cc_gtest(
         "//src/v/storage",
         "//src/v/storage:resources",
         "//src/v/test_utils:gtest",
+        "@abseil-cpp//absl/strings",
         "@fmt",
         "@googletest//:gtest",
         "@seastar",
