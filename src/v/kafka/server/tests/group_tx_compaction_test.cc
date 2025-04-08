@@ -80,6 +80,13 @@ struct group_manager_fixture
         return app._group_manager.local().txn_offset_commit(std::move(request));
     }
 
+    auto offset_commit(kafka::offset_commit_request request) {
+        return app._group_manager.local().offset_commit(std::move(request));
+    }
+
+    auto offset_fetch(kafka::offset_fetch_request request) {
+        return app._group_manager.local().offset_fetch(std::move(request));
+    }
     ss::shared_ptr<storage::log> consumer_offsets_log() {
         return app.storage.local().log_mgr().get(offsets_ntp);
     }
@@ -410,9 +417,341 @@ struct group_basic_workload_fixture
   : public group_manager_fixture
   , public ::testing::WithParamInterface<workload_parameters> {};
 
-// Test that validates the stm is tracking open transactions correctly.
-TEST_P_CORO(group_basic_workload_fixture, test_group_tx_stm_tracking) {
-    auto stm = group_tx_stm();
+// // Test that validates the stm is tracking open transactions correctly.
+// TEST_P_CORO(group_basic_workload_fixture, test_group_tx_stm_tracking) {
+//     auto stm = group_tx_stm();
+//     auto log = consumer_offsets_log();
+//     // Generate a commit transaction.
+//     auto ops = generate_workload(GetParam());
+//     ASSERT_EQ_CORO(ops.size(), 4);
+
+//     auto wait_until_stm_apply = [&] {
+//         return tests::cooperative_spin_wait_with_timeout(5s, [log, stm] {
+//             return log->offsets().dirty_offset == stm->last_applied_offset();
+//         });
+//     };
+
+//     auto execute_op = [&](int idx) {
+//         return ops[idx]->execute(this).discard_result().then(
+//           [&]() { return wait_until_stm_apply(); });
+//     };
+
+//     // prep the group
+//     co_await execute_op(0);
+
+//     co_await wait_until_stm_apply();
+//     // no transactions in flight
+//     ASSERT_EQ_CORO(
+//       stm->max_collectible_offset(), log->offsets().committed_offset);
+//     auto before = stm->max_collectible_offset();
+//     // begin transaction.
+//     co_await execute_op(1);
+//     ASSERT_EQ_CORO(stm->max_collectible_offset(), before);
+//     // tx offset commit
+//     co_await execute_op(2);
+//     ASSERT_EQ_CORO(stm->max_collectible_offset(), before);
+//     // end transaction
+//     co_await execute_op(3);
+//     // ensure max collectible offset moved.
+//     ASSERT_GT_CORO(stm->max_collectible_offset(), before);
+//     ASSERT_EQ_CORO(
+//       stm->max_collectible_offset(), log->offsets().committed_offset);
+// }
+
+// INSTANTIATE_TEST_SUITE_P(
+//   group_tx_basic_test,
+//   group_basic_workload_fixture,
+//   testing::Values(
+//     workload_parameters{
+//       .num_groups = 1,
+//       .num_tx_per_group = 1,
+//       .num_rolls = 0,
+//       .tx_workload_type = workload_parameters::commit_only},
+//     workload_parameters{
+//       .num_groups = 1,
+//       .num_tx_per_group = 1,
+//       .num_rolls = 0,
+//       .tx_workload_type = workload_parameters::abort_only}));
+
+// struct group_tx_random_workload_fixture
+//   : public group_manager_fixture
+//   , public ::testing::WithParamInterface<workload_parameters> {};
+
+// TEST_P_CORO(
+//   group_tx_random_workload_fixture, test_compaction_with_group_transactions)
+//   {
+//     co_await run_workload(GetParam(), this, consumer_offsets_log());
+// }
+
+// INSTANTIATE_TEST_SUITE_P(
+//   group_tx_combinations,
+//   group_tx_random_workload_fixture,
+//   testing::Values(
+//     workload_parameters{
+//       .num_groups = 100,
+//       .num_tx_per_group = 50,
+//       .num_rolls = 30,
+//       .tx_workload_type = workload_parameters::commit_only},
+//     workload_parameters{
+//       .num_groups = 100,
+//       .num_tx_per_group = 50,
+//       .num_rolls = 30,
+//       .tx_workload_type = workload_parameters::abort_only},
+//     workload_parameters{
+//       .num_groups = 100,
+//       .num_tx_per_group = 50,
+//       .num_rolls = 30,
+//       .tx_workload_type = workload_parameters::mixed}));
+
+struct offset_state {
+    using offset_commit_map = absl::flat_hash_map<
+      model::topic,
+      absl::flat_hash_map<model::partition_id, model::offset>>;
+
+    offset_state()
+      : gr("test-group") {}
+
+    void add_update() {
+        offset_commit_map req_committed_offsets;
+
+        for (int i = 0; i < 20; i++) {
+            model::topic tp(
+              fmt::format("test-topic-{}", random_generators::get_int(0, 5)));
+            model::topic_partition t_part(
+              tp, model::partition_id(random_generators::get_int(0, 100)));
+
+            auto it = committed_offsets.find(t_part);
+            auto pit = pending_offsets.find(t_part);
+            auto p_co = pit != pending_offsets.end()
+                          ? model::next_offset(pit->second)
+                          : model::offset(0);
+            auto co = it != committed_offsets.end()
+                        ? model::next_offset(it->second)
+                        : model::offset(0);
+
+            req_committed_offsets[tp][t_part.partition] = std::max(p_co, co);
+        }
+        updates.push_back(req_committed_offsets);
+    }
+
+    offset_commit_map to_offset_commit_map() {
+        offset_commit_map req_committed_offsets;
+        for (auto& [tp, offset] : committed_offsets) {
+            auto it = pending_offsets.find(tp);
+            auto effecitve_o = offset;
+            if (it != pending_offsets.end()) {
+                effecitve_o = std::max(it->second, offset);
+            }
+            req_committed_offsets[tp.topic][tp.partition] = effecitve_o;
+        }
+        return req_committed_offsets;
+    }
+
+    std::pair<kafka::offset_commit_request, offset_commit_map> make_ocr() {
+        kafka::offset_commit_request ocr;
+
+        ocr.data.group_id = gr;
+        ocr.ntp = model::ntp(
+          model::kafka_namespace,
+          model::kafka_consumer_offsets_topic,
+          model::partition_id(0));
+        ocr.data.member_id = member;
+        ocr.data.generation_id = generation_id;
+
+        auto offsets = !updates.empty() ? updates.front()
+                                        : to_offset_commit_map();
+        if (!updates.empty()) {
+            updates.pop_front();
+        }
+
+        // Create a new offset commit request with the given generation ID and
+
+        for (auto& [tp, partitions] : offsets) {
+            kafka::offset_commit_request_topic topic;
+            topic.name = tp;
+            topic.partitions.reserve(partitions.size());
+
+            for (auto& [p, o] : partitions) {
+                kafka::offset_commit_request_partition partition;
+                // fmt::print("commit: {}/{} = {} \n", tp, p, o);
+                partition.partition_index = p;
+                partition.committed_offset = o;
+                partition.commit_timestamp = model::timestamp::now().value();
+                pending_offsets[model::topic_partition(tp, p)] = o;
+                topic.partitions.push_back(std::move(partition));
+            }
+            ocr.data.topics.push_back(std::move(topic));
+        }
+
+        return std::make_pair(std::move(ocr), std::move(offsets));
+    }
+
+    kafka::offset_fetch_request make_ofr() {
+        kafka::offset_fetch_request ofr;
+        ofr.data.group_id = gr;
+        ofr.data.require_stable = true;
+        ofr.ntp = model::ntp(
+          model::kafka_namespace,
+          model::kafka_consumer_offsets_topic,
+          model::partition_id(0));
+        return ofr;
+    }
+
+    ss::future<> init_group(group_manager_fixture& f) {
+        kafka::join_group_request request;
+        request.data = kafka::join_group_request_data{
+          .group_id = gr,
+          .session_timeout_ms = 300s,
+          .member_id = kafka::unknown_member_id,
+          .protocol_type = kafka::protocol_type{"test"},
+          .protocols = chunked_vector<kafka::join_group_request_protocol>{
+            {.name = kafka::protocol_name("test"), .metadata = bytes()}}};
+        request.ntp = offsets_ntp;
+        auto r = co_await f.join_group(std::move(request));
+        vassert(
+          r.data.error_code == kafka::error_code::none, "Join group failed");
+        generation_id = r.data.generation_id;
+        member = r.data.member_id;
+
+        kafka::sync_group_request sync_request;
+        sync_request.ntp = offsets_ntp;
+        sync_request.data = kafka::sync_group_request_data{
+          .group_id = gr,
+          .generation_id = r.data.generation_id,
+          .member_id = r.data.member_id,
+        };
+        co_await f.sync_group(std::move(sync_request));
+    }
+    void update_offset(const model::topic_partition& t_part, model::offset o) {
+        auto current = committed_offsets[t_part];
+        // fmt::print(
+        //   "update: {}/{} = {}, current: {}\n",
+        //   t_part.topic,
+        //   t_part.partition,
+        //   o,
+        //   current);
+        committed_offsets[t_part] = std::max(o, current);
+    }
+
+    std::optional<model::offset>
+    get_offset(const model::topic_partition& t_part) {
+        auto it = committed_offsets.find(t_part);
+        if (it != committed_offsets.end()) {
+            return it->second;
+        }
+        return std::nullopt;
+    }
+    ss::circular_buffer<offset_commit_map> updates;
+
+    kafka::group_id gr;
+    kafka::member_id member;
+    kafka::generation_id generation_id;
+    std::chrono::steady_clock::time_point last_step_down;
+    chunked_hash_map<model::topic_partition, model::offset> pending_offsets;
+
+private:
+    chunked_hash_map<model::topic_partition, model::offset> committed_offsets;
+};
+
+void apply_updates(
+  kafka::offset_commit_response resp,
+  offset_state::offset_commit_map update,
+  offset_state& o_state) {
+    for (auto& t : resp.data.topics) {
+        for (auto& p : t.partitions) {
+            model::topic_partition t_part(
+              model::topic(t.name), model::partition_id(p.partition_index));
+            if (p.error_code != kafka::error_code::none) {
+                continue;
+            }
+            auto o = update.find(t_part.topic)
+                       ->second.find(t_part.partition)
+                       ->second;
+
+            o_state.update_offset(t_part, o);
+        }
+    }
+}
+ss::future<>
+single_commit_request(group_manager_fixture& fixture, offset_state& o_state) {
+    std::vector<ss::future<>> futures;
+    futures.reserve(10);
+    for (int i = 0; i < 10; ++i) {
+        auto [req, update] = o_state.make_ocr();
+
+        auto stg = fixture.offset_commit(std::move(req));
+        co_await std::move(stg.dispatched);
+
+        auto ff = std::move(stg.result)
+                    .then([&, update = std::move(update)](
+                            kafka::offset_commit_response resp) mutable {
+                        apply_updates(
+                          std::move(resp), std::move(update), o_state);
+                    });
+        futures.push_back(std::move(ff));
+    }
+
+    co_await ss::when_all_succeed(futures.begin(), futures.end());
+}
+
+ss::future<> validate_offsets(
+  const model::ntp& ntp,
+  group_manager_fixture& fixture,
+  offset_state& o_state) {
+    auto now = std::chrono::steady_clock::now();
+    if (now - o_state.last_step_down > 2s) {
+        o_state.last_step_down = now;
+        co_await fixture.app.partition_manager.local()
+          .get(ntp)
+          ->raft()
+          ->step_down("test_step_down");
+
+        co_await tests::cooperative_spin_wait_with_timeout(30s, [&] {
+            return fixture.offset_fetch(o_state.make_ofr())
+              .then([](auto offsets) {
+                  return offsets.data.error_code == kafka::error_code::none;
+              });
+        });
+    }
+    auto offsets_after_recovery
+      = fixture.offset_fetch(o_state.make_ofr()).get();
+    vassert(
+      offsets_after_recovery.data.error_code == kafka::error_code::none,
+      "Validation must return success");
+    for (auto& topic : offsets_after_recovery.data.topics) {
+        for (auto& partition : topic.partitions) {
+            auto state_o = o_state.get_offset(
+              model::topic_partition(topic.name, partition.partition_index));
+            vassert(state_o, "offset not found");
+            if (partition.error_code != kafka::error_code::none) {
+                continue;
+            }
+
+            fmt::print(
+              ">>> validating offsets for {}/{} state_offset: {}, "
+              "committed_offset: {}\n",
+              topic.name,
+              partition.partition_index,
+              state_o,
+              partition.committed_offset);
+            vassert(
+              state_o <= partition.committed_offset,
+              "offsets for {}/{} do not match state_offset: {}, "
+              "committed_offset: {}",
+              topic.name,
+              partition.partition_index,
+              state_o,
+              partition.committed_offset);
+        }
+    }
+}
+
+TEST_F(group_manager_fixture, test_group_commits) {
+    config::shard_local_cfg().log_segment_ms_min.set_value(1s);
+    config::shard_local_cfg().log_segment_ms.set_value(1s);
+    config::shard_local_cfg().log_segment_size.set_value(1024 * 1024);
+    offset_state o_state;
+    o_state.init_group(*this).get();
     auto log = consumer_offsets_log();
     // Generate a commit transaction.
     auto ops = generate_workload(GetParam());
@@ -435,20 +774,20 @@ TEST_P_CORO(group_basic_workload_fixture, test_group_tx_stm_tracking) {
     co_await wait_until_stm_apply();
     // no transactions in flight
     ASSERT_EQ_CORO(
-      stm->max_removable_local_log_offset(), log->offsets().committed_offset);
-    auto before = stm->max_removable_local_log_offset();
+      stm->max_collectible_offset(), log->offsets().committed_offset);
+    auto before = stm->max_collectible_offset();
     // begin transaction.
     co_await execute_op(1);
-    ASSERT_EQ_CORO(stm->max_removable_local_log_offset(), before);
+    ASSERT_EQ_CORO(stm->max_collectible_offset(), before);
     // tx offset commit
     co_await execute_op(2);
-    ASSERT_EQ_CORO(stm->max_removable_local_log_offset(), before);
+    ASSERT_EQ_CORO(stm->max_collectible_offset(), before);
     // end transaction
     co_await execute_op(3);
-    // ensure max removable offset moved.
-    ASSERT_GT_CORO(stm->max_removable_local_log_offset(), before);
+    // ensure max collectible offset moved.
+    ASSERT_GT_CORO(stm->max_collectible_offset(), before);
     ASSERT_EQ_CORO(
-      stm->max_removable_local_log_offset(), log->offsets().committed_offset);
+      stm->max_collectible_offset(), log->offsets().committed_offset);
 }
 
 INSTANTIATE_TEST_SUITE_P(

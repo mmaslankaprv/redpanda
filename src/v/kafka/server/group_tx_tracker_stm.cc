@@ -196,7 +196,7 @@ void group_tx_tracker_stm::handle_group_metadata(group_metadata_kv md) {
         // a group in the main state machine.
         _all_txs.erase(md.key.group_id);
     }
-}
+} 
 
 ss::future<> group_tx_tracker_stm::handle_tx_offsets(
   model::record_batch_header, kafka::group_tx::offsets_metadata) {
