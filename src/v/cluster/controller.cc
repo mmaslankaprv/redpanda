@@ -88,6 +88,7 @@
 #include <seastar/core/sharded.hh>
 #include <seastar/core/smp.hh>
 #include <seastar/core/thread.hh>
+#include <seastar/coroutine/switch_to.hh>
 #include <seastar/util/later.hh>
 
 #include <chrono>
@@ -235,6 +236,11 @@ ss::future<> controller::start(
   ss::shared_ptr<cluster::cloud_metadata::offsets_recovery_requestor>
     offsets_recovery,
   std::chrono::milliseconds application_start_time) {
+    /**
+     * Switch to cluster scheduling group to ensure that all the controller
+     * services are started within that scheduling group.
+     */
+    co_await ss::coroutine::switch_to(_scheduling_group);
     auto initial_raft0_brokers = discovery.founding_brokers();
     std::vector<model::node_id> seed_nodes;
     seed_nodes.reserve(initial_raft0_brokers.size());
@@ -823,6 +829,8 @@ ss::future<> controller::start(
       &data_migrations::backend::start);
     co_await _data_migration_irpc_frontend.start(
       std::ref(_feature_table), std::ref(_data_migration_backend));
+    // switch back to the default scheduling group
+    co_await ss::coroutine::switch_to(ss::default_scheduling_group());
 }
 
 ss::future<> controller::set_ready() {
